@@ -22,7 +22,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = ""
+SOURCE = "TEST"
 
 def parse_args():
     """Handle command-line arguments."""
