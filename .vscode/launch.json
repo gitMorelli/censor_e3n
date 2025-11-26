@@ -47,6 +47,22 @@
                 //"--skip_checking",
                 //"--skip_aligning"
             ]
-        }
-    ]
+        },
+        {
+            "name": "Python Debugger: censor (LocalEnv)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.censor",
+            "console": "integratedTerminal",
+            "python": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--verbose",
+                "--enlarge_censor_boxes"
+            ]
+    },
+]
 }

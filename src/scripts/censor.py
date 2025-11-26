@@ -4,7 +4,7 @@ import logging
 import os
 
 import cv2
-from src.utils.convert_utils import pdf_to_png_images
+#from src.utils.convert_utils import pdf_to_png_images
 from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number
 from src.utils.file_utils import get_basename, create_folder, check_name_matching
 from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
@@ -14,7 +14,7 @@ from src.utils.feature_extraction import extract_features_from_blank_roi, extrac
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image
 from PIL import Image
-import numpy as np
+import numpy as np 
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,24 +22,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "TEST"
+SOURCE = "Z:\\vscode\\censor_e3n\\" # "C:\\Users\\andre\\VsCode\\censoring project\\"
 
 def parse_args():
     """Handle command-line arguments."""
     parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
     parser.add_argument(
         "-a", "--annotation_path",
-        default="C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\annotazioni",
+        default=SOURCE+"\\data\\rimes_tests\\annotazioni",
         help="Directory with the annotation files from cvat for each image",
     )
     parser.add_argument(
         "-f", "--filled_path",
-        default="C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\filled\\rimes",
+        default=SOURCE+"data\\rimes_tests\\filled\\rimes",
         help="Directory with the files to censor",
     )
     parser.add_argument(
         "-s", "--save_path",
-        default="C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\censored",
+        default=SOURCE+"data\\rimes_tests\\censored",
         help="Directory where I save the final censored files",
     )
     parser.add_argument(
