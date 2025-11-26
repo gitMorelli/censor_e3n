@@ -2,7 +2,7 @@
 import argparse
 import logging
 import os
-from src.utils.convert_utils import pdf_to_png_images
+
 from src.utils.file_utils import list_subfolders,list_files_with_extension
 from src.utils.file_utils import get_basename, create_folder, check_name_matching
 from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
@@ -18,23 +18,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+SOURCE = "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
 
 def parse_args():
     """Handle command-line arguments."""
     parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
     parser.add_argument(
         "-t", "--template_path",
-        default="C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\templates",
+        default=SOURCE+"templates",
         help="Path to the template files, saved as folders containing PNG images",
     )
     parser.add_argument(
         "-a", "--annotation_path",
-        default="C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\annotazioni",
+        default=SOURCE+"annotazioni",
         help="Directory with the annotation files from cvat for each image",
     )
     parser.add_argument(
         "-s", "--save_path",
-        default="C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\annotazioni\\precomputed_features",
+        default=SOURCE+"annotazioni\\precomputed_features",
         help="Directory where I save the final annotation files",
     )
     parser.add_argument(

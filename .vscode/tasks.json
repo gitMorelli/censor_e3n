@@ -15,6 +15,36 @@
         "reveal": "always"
       },
       "problemMatcher": []
+    },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: png_from_pdf_q5_test (LocalEnv)",
+      "type": "process",
+      "command": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: generate_annotations (LocalEnv)",
+      "type": "process",
+      "command": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
     }
   ]
 }

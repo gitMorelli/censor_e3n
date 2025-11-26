@@ -20,9 +20,38 @@
             ]
         },
         {
+            "name": "Python Debugger: png_from_pdf_q5_test (LocalEnv)",
+            "type": "debugpy",
+            "request": "launch",
+            //"program": "${workspaceFolder}/src/scripts/png_from_pdf.py",
+            "python": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+            "module": "src.scripts.png_from_pdf_q5_test",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--verbose"
+            ]
+        },
+        {
             "name": "Python Debugger: generate_annotations",
             "type": "debugpy",
             "request": "launch",
+            "module": "src.scripts.generate_annotations",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
+                "--verbose"
+            ]
+        },
+        {
+            "name": "Python Debugger: generate_annotations (LocalEnv)",
+            "type": "debugpy",
+            "request": "launch",
+            "python": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
             "module": "src.scripts.generate_annotations",
             "console": "integratedTerminal",
             "env": {

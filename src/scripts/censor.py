@@ -22,24 +22,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "Z:\\vscode\\censor_e3n\\" # "C:\\Users\\andre\\VsCode\\censoring project\\"
+SOURCE = "Z:\\vscode\\censor_e3n\\data\\q5_tests" # "C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests"
 
 def parse_args():
     """Handle command-line arguments."""
     parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
     parser.add_argument(
         "-a", "--annotation_path",
-        default=SOURCE+"\\data\\rimes_tests\\annotazioni",
+        default=SOURCE+"\\annotazioni",
         help="Directory with the annotation files from cvat for each image",
     )
     parser.add_argument(
         "-f", "--filled_path",
-        default=SOURCE+"data\\rimes_tests\\filled\\rimes",
+        #default=SOURCE+"\\filled\\rimes",
+        default=SOURCE+"\\filled",
         help="Directory with the files to censor",
     )
     parser.add_argument(
         "-s", "--save_path",
-        default=SOURCE+"data\\rimes_tests\\censored",
+        default=SOURCE+"\\censored",
         help="Directory where I save the final censored files",
     )
     parser.add_argument(
