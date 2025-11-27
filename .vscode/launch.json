@@ -31,7 +31,8 @@
                 "PYTHONPATH": "${workspaceFolder}"
             },
             "args": [
-                "--verbose"
+                "--verbose",
+                "--save_debug_times"
             ]
         },
         {
@@ -84,13 +85,16 @@
             "module": "src.scripts.censor",
             "console": "integratedTerminal",
             "python": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
-            "cwd": "${workspaceFolder}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             },
             "args": [
-                "--verbose",
-                "--enlarge_censor_boxes"
+                //"--verbose",
+                //"--enlarge_censor_boxes",
+                //"--save_debug_images",
+                "--save_debug_times",
+                "--skip_checking_2", //if i skip only this -> 29s
+                //"--skip_checking_1" //if i skip both -> 16.9s
             ]
     },
 ]

@@ -4,6 +4,8 @@ from src.utils.feature_extraction import phash_hamming_distance, binary_crc32, c
 import cv2  
 import numpy as np
 from matplotlib.patches import Polygon
+import matplotlib.pyplot as plt
+from src.utils.logging import FileWriter
 
 ######### Compute misalignment using ALIGN boxes #########
 def enlarge_crop_coords(coords, scale_factor=1.2, img_shape=None):
@@ -77,7 +79,7 @@ def compute_distance(c1,c2):
 
 def compute_transformation(shifts, centers):
     if len(shifts) < 2:
-        return 1.0,0,0,0  # Not enough data to compute transformation
+        return 1.0,0,0,0,(0,0)  # Not enough data to compute transformation
     max_dist = 0
     for i in range(len(shifts)):
         for j in range(i + 1, len(shifts)):
@@ -147,55 +149,121 @@ def apply_transformation(reference,coords, scale_factor, shift_x, shift_y, angle
 
     return corners_rot #recall that now the box is not axis-aligned anymore corners_rot is a list of 4 (x,y) points
 
-def plot_rois_on_image(image, rois, save_path,color="red"):
-    import matplotlib.pyplot as plt
-    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+def plot_rois_on_image(image, rois, save_path, colors=None):
+
+    h, w = image.shape[:2]
+
+    # Create figure with size matching the image pixel dimensions
+    dpi = 100
+    fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
+
+    if colors is None:
+        colors = ['red'] * len(rois)
+
+    ax = plt.axes()
+    ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+
+    # Remove axes for clean output
+    ax.axis('off')
+
     for i, coord in enumerate(rois):
         x_min, y_min, x_max, y_max = coord
-        center_x = (x_min + x_max) // 2
-        center_y = (y_min + y_max) // 2
-        rect = plt.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min, linewidth=0.5, edgecolor=color, facecolor='none')
-        plt.gca().add_patch(rect)
-        plt.text(center_x, center_y, str(i), color='blue', fontsize=12, ha='center', va='center')
-    plt.savefig(save_path)
-    plt.close()
+        rect = plt.Rectangle(
+            (x_min, y_min),
+            x_max - x_min,
+            y_max - y_min,
+            linewidth=0.5,
+            edgecolor=colors[i],
+            facecolor='none'
+        )
+        ax.add_patch(rect)
 
-def plot_rois_on_image_polygons(image, rois, save_path,color="red"):
-    import matplotlib.pyplot as plt
-    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    ax = plt.gca()
+    # Save without extra borders
+    plt.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+
+def plot_rois_on_image_polygons(image, rois, save_path, colors=None):
+
+    h, w = image.shape[:2]
+
+    # Maintain original image resolution
+    dpi = 100
+    fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
+    ax = plt.axes()
+
+    if colors is None:
+        colors = ['red'] * len(rois)
+
+    ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    ax.axis('off')
+
     for i, coord in enumerate(rois):
-        # coord is expected to be an iterable of four (x,y) points
-        pts = np.array(coord, dtype=float)  # shape (4,2)
-        poly = Polygon(pts, closed=True, linewidth=0.5, edgecolor=color, facecolor='none')
+        pts = np.array(coord, dtype=float)  # expected shape: (4, 2)
+        poly = Polygon(
+            pts,
+            closed=True,
+            linewidth=0.5,
+            edgecolor=colors[i],
+            facecolor='none'
+        )
         ax.add_patch(poly)
-        # centroid for labeling
-        center_x = pts[:, 0].mean()
-        center_y = pts[:, 1].mean()
-        plt.text(center_x, center_y, str(i), color='blue', fontsize=12, ha='center', va='center')
-    plt.axis('off')
-    plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
-    plt.close()
 
-def plot_both_rois_on_image(image, rois_1, rois_2, save_path,color_1="red", color_2="green"):
-    import matplotlib.pyplot as plt
-    plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    for i, coord in enumerate(rois_1):
+        # If labeling is needed, uncomment below
+        # center_x, center_y = pts[:, 0].mean(), pts[:, 1].mean()
+        # ax.text(center_x, center_y, str(i), color=colors[i], fontsize=12,
+        #        ha='center', va='center')
+
+    # Save as original resolution
+    plt.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+
+
+def plot_both_rois_on_image(image, rois_1, rois_2, save_path,
+                            color_1="red", color_2="green"):
+    """
+    Draw rectangular ROIs (rois_1) and polygon ROIs (rois_2)
+    while preserving the original image resolution.
+    """
+
+    h, w = image.shape[:2]
+
+    # Create a figure matching the image's resolution
+    dpi = 100
+    fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
+    ax = plt.axes()
+
+    ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    ax.axis("off")
+
+    # --- Draw rectangular ROIs ---
+    for coord in rois_1:
         x_min, y_min, x_max, y_max = coord
-        center_x = (x_min + x_max) // 2
-        center_y = (y_min + y_max) // 2
-        rect = plt.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min, linewidth=0.5, edgecolor=color_1, facecolor='none')
-        plt.gca().add_patch(rect)
-        plt.text(center_x, center_y, str(i), color='blue', fontsize=12, ha='center', va='center')
-    for i, coord in enumerate(rois_2):
-        x_min, y_min, x_max, y_max = coord
-        center_x = (x_min + x_max) // 2
-        center_y = (y_min + y_max) // 2
-        rect = plt.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min, linewidth=0.5, edgecolor=color_2, facecolor='none')
-        plt.gca().add_patch(rect)
-        plt.text(center_x, center_y, str(i), color='blue', fontsize=12, ha='center', va='center')
-    plt.savefig(save_path)
-    plt.close()
+        rect = plt.Rectangle(
+            (x_min, y_min),
+            x_max - x_min,
+            y_max - y_min,
+            linewidth=0.5,
+            edgecolor=color_1,
+            facecolor='none'
+        )
+        ax.add_patch(rect)
+
+    # --- Draw polygon ROIs ---
+    for coord in rois_2:
+        pts = np.array(coord, dtype=float)  # expected shape (4,2)
+        poly = Polygon(
+            pts,
+            closed=True,
+            linewidth=0.5,
+            edgecolor=color_2,
+            facecolor='none'
+        )
+        ax.add_patch(poly)
+
+    # Save image with original resolution
+    plt.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
+
 ######### CHECK FOR ALIGNMENT using ROIs #########
 # -----------------------------
 # Decision logic per ROI
@@ -204,7 +272,7 @@ def roi_decision(f_roi,phash_hamm_thresh=8,
                  ncc_thresh=0.92,
                  edge_iou_thresh=0.75,
                  proj_ncc_thresh=0.90,t_roi=None,pre_computed_roi=None,
-                 to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'],treshold_test=2):
+                 to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'],treshold_test=2,logger=None):
     """
     Returns True if the two ROIs are considered aligned/similar enough.
     Order of checks:
@@ -221,6 +289,7 @@ def roi_decision(f_roi,phash_hamm_thresh=8,
     else:
         pre_computed=False
     # --- 0) Binary checksum (Otsu binarize + CRC32)
+    logger and logger.call_start(f'crc32')
     if 'crc32' in to_compute:
         if pre_computed:
             t_crc = pre_computed_roi['crc32']
@@ -229,8 +298,10 @@ def roi_decision(f_roi,phash_hamm_thresh=8,
         f_crc = binary_crc32(f_roi)
         if t_crc == f_crc:
             ok_tests += 1
+    logger and logger.call_end(f'crc32')
 
     # --- 1) DCT-based pHash (cv2.dct)
+    logger and logger.call_start(f'dct')
     if 'dct_phash' in to_compute:
         if pre_computed:
             h1 = pre_computed_roi['dct_phash']#check that was precomputed with the same params
@@ -240,23 +311,29 @@ def roi_decision(f_roi,phash_hamm_thresh=8,
         hdist = phash_hamming_distance(h1, h2)
         if hdist <= phash_hamm_thresh:
             ok_tests += 1
+    logger and logger.call_end(f'dct')
 
     # --- 2) NCC on intensities
+    logger and logger.call_start(f'ncc')
     if 'ncc' in to_compute:
         if pre_computed:
             t_roi = pre_computed_roi['full']
         ncc_value,_,_ = ncc(t_roi, f_roi)
         if ncc_value >= ncc_thresh:
             ok_tests += 1
+    logger and logger.call_end(f'ncc')
 
     # --- 3) Edge IoU
+    logger and logger.call_start(f'edge_iou')
     if 'edge_iou' in to_compute:
         if pre_computed:
             t_roi = pre_computed_roi['full']
         if edge_iou(t_roi, f_roi) >= edge_iou_thresh:
             ok_tests += 1
+    logger and logger.call_end(f'edge_iou')
 
     # --- 4) Projection profiles (horizontal & vertical)
+    logger and logger.call_start(f'profiles')
     if 'profile' in to_compute:
         if pre_computed:
             th = pre_computed_roi['profile_h']
@@ -269,6 +346,7 @@ def roi_decision(f_roi,phash_hamm_thresh=8,
         # Require both directions to be a strong match (or relax to either if desired)
         if profile_ncc(th, fh) >= proj_ncc_thresh and profile_ncc(tv, fv) >= proj_ncc_thresh:
             ok_tests += 1
+    logger and logger.call_end(f'profiles')
     if ok_tests >= treshold_test:
         return True
     return False
@@ -288,7 +366,7 @@ def roi_blank_decision(f_roi, n_black_thresh=0.1,
             t_n_black = count_black_pixels(t_roi)
         f_n_black = count_black_pixels(f_roi)
         
-        if np.abs(f_n_black-t_n_black)/t_n_black <= n_black_thresh:
+        if np.abs(f_n_black-t_n_black)/(t_n_black+1e-10) <= n_black_thresh:
             ok_tests += 1
     if 'cc' in to_compute:
         if pre_computed:
@@ -305,7 +383,10 @@ def roi_blank_decision(f_roi, n_black_thresh=0.1,
 # Page-level voting
 # -----------------------------
 def page_vote(filled_png, rois, min_votes=3,
-              template_png=None,pre_computed_rois=None):
+              template_png=None,pre_computed_rois=None,logger=None):
+    
+    logger and logger.call_start('page_vote',block=True)
+
     votes = 0
     total = 0
     mode="cv2"
@@ -317,28 +398,41 @@ def page_vote(filled_png, rois, min_votes=3,
     for i,coord in enumerate(rois[:-1]):
         # scale ROI coords
         decision=False
+
+        logger and logger.call_start(f'preprocess_roi_{i}')
         f_roi = preprocess_roi(filled_png, coord, mode=mode, verbose=False)
+        logger and logger.call_end(f'preprocess_roi_{i}')
+
         if not pre_computed:
             t_roi = preprocess_roi(template_png, coord, mode=mode, verbose=False)
             decision = roi_decision(f_roi, t_roi=t_roi)
         else:
             pre_comp_roi = pre_computed_rois[i]
-            decision = roi_decision(f_roi, pre_computed_roi=pre_comp_roi)
+            logger and logger.call_start(f'roi_decision_{i}')
+            decision = roi_decision(f_roi, pre_computed_roi=pre_comp_roi,logger=logger)
+            logger and logger.call_end(f'roi_decision_{i}')
         total += 1
         if decision:
             votes += 1
         # early exit: impossible to reach min_votes
         if votes + (len(rois)-total) < min_votes:
+            logger and logger.call_end('page_vote',block=True)
             return False
     coord = rois[-1]  # blank ROI is the last one
+    logger and logger.call_start(f'blank_preprocess')
     f_roi = preprocess_blank_roi(filled_png, coord, mode=mode, verbose=False)
+    logger and logger.call_end(f'blank_preprocess')
     if not pre_computed:
         t_roi = preprocess_blank_roi(template_png, coord, mode=mode, verbose=False)
         decision = roi_blank_decision(f_roi, t_roi=t_roi)
     else:
         pre_comp_roi = pre_computed_rois[-1]
+        logger and logger.call_start(f'blank_decision')
         decision = roi_blank_decision(f_roi, pre_computed_roi=pre_comp_roi)
+        logger and logger.call_end(f'blank_decision')
     if decision:
         votes += 1
+    
+    logger and logger.call_end('page_vote',block=True)
 
     return votes >= min_votes

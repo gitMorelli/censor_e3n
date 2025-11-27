@@ -6,6 +6,7 @@ import numpy as np
 from typing import Tuple, Union, Any
 import zlib
 from pathlib import Path
+from src.utils.logging import FileWriter
 
 ModeImage = Union[Image.Image, np.ndarray]
 
@@ -531,23 +532,154 @@ def preprocess_alignment_roi(img: ModeImage, box: Tuple[int, int, int, int], mod
 
 ######### Censoring function #########################################################################
 # get a cv2 image and a set of ROIs, put the pixel black in those regions. SHould work both with polygons and rectangles
-def censor_image(img: ModeImage, roi_boxes, verbose: bool = False) -> ModeImage:
+
+
+def fill_polygon_striped_relative(
+    img: ModeImage, 
+    pts: np.ndarray, 
+    thickness_pct: float = 0.1, 
+    spacing_mult: float = 0.5,
+    color=(0, 0, 0)
+):
+    """
+    Fills a polygon (ASSUMED TO BE A ROTATED RECTANGLE) with parallel stripes 
+    that run parallel to the MOST VERTICAL AXIS of the rectangle.
+    
+    The function uses cv2.minAreaRect to calculate the rectangle's properties 
+    and then draws rotated stripe segments using cv2.boxPoints.
+    """
+    
+    # 1. Image and Channel Analysis
+    is_color = len(img.shape) == 3
+    if not is_color:
+        color = 0 
+    
+    # 2. Get Rotated Rectangle Properties
+    # rect is a tuple: ((center_x, center_y), (width, height), angle)
+    rect = cv2.minAreaRect(pts)
+    center, size, angle = rect
+    
+    w, h = size
+    
+    # Determine the MOST VERTICAL AXIS based on the angle.
+    # The angle (A_w) is between the width (w) side and the x-axis, A_w in [-90, 0).
+    # The angle of the height (h) side is A_h = A_w + 90.
+    
+    # If abs(angle) > 45, the w-side is closer to vertical (-90).
+    # If abs(angle) <= 45, the h-side is closer to vertical (angle+90 is closer to 90).
+    
+    if abs(angle) <= 45:
+        # Case 1: w-side is the most vertical. Stripes run parallel to w.
+        vertical_dim = w
+        horizontal_dim = h
+        
+        # Stripe Coverage Dimension is the dimension we step across (w)
+        stripe_coverage_dim = vertical_dim
+        # Stripe Length is the full length of the stripe (h)
+        stripe_length = horizontal_dim
+        
+        # The rotation angle of the stripe segment is the angle of the vertical axis (w)
+        final_angle = angle 
+        
+    else: # abs(angle) <= 45
+        # Case 2: h-side is the most vertical. Stripes run parallel to h.
+        vertical_dim = h
+        horizontal_dim = w
+        
+        # Stripe Coverage Dimension is the dimension we step across (h)
+        stripe_coverage_dim = vertical_dim
+        # Stripe Length is the full length of the stripe (w)
+        stripe_length = horizontal_dim
+        
+        # The rotation angle of the stripe segment is the angle of the vertical axis (h)
+        final_angle = angle + 90
+        
+    # Apply the determined angle
+    angle = final_angle 
+        
+    # 3. Calculate Stripe Parameters
+    
+    # The thickness is calculated relative to the coverage dimension
+    thickness = max(1, int(stripe_coverage_dim * thickness_pct))
+    gap = max(1, int(thickness * spacing_mult))
+    step = thickness + gap
+
+    # Total number of stripes needed to cover the dimension
+    num_steps = int(np.ceil(stripe_coverage_dim / step))
+    
+    half_coverage_dim = stripe_coverage_dim / 2.0
+    
+    # 4. Draw Stripes by Filling Rotated Rectangles
+
+    for i in range(num_steps):
+        # Calculate the position along the coverage dimension's axis (from -half_coverage_dim to +half_coverage_dim)
+        # Start position is -half_coverage_dim + offset to the center of the first stripe
+        current_pos = -half_coverage_dim + i * step + thickness / 2.0
+        
+        # Calculate the transformation vector (dx, dy) for the offset from the main center
+        # The rotation direction is determined by the final_angle
+        rad = np.deg2rad(angle)
+        dx = np.cos(rad) * current_pos
+        dy = np.sin(rad) * current_pos
+        
+        # The center of the current stripe segment
+        stripe_center = (center[0] + dx, center[1] + dy)
+        
+        # Stripe rectangle definition: (center, size, angle)
+        # Size is (thickness, full length)
+        stripe_rect = (
+            stripe_center, 
+            (thickness, stripe_length), 
+            angle
+        )
+        
+        # Get the four vertices of the rotated stripe rectangle
+        stripe_pts = cv2.boxPoints(stripe_rect)
+        stripe_pts = np.int32(stripe_pts)
+        
+        # Fill the sub-polygon (the stripe segment) directly on the image copy
+        cv2.fillPoly(img, [stripe_pts], color=color)
+
+def censor_image(img: ModeImage, roi_boxes, verbose: bool = False, partial_coverage=None,logger=None,**kwargs) -> ModeImage:
     """Censor (blacken) regions in img defined by roi_boxes (list of boxes)."""
+    logger and logger.call_start(f'save_censored_image')
+    if partial_coverage == None:
+        partial_coverage=[False for i in range(len(roi_boxes))]
     if verbose:
         _t0 = perf_counter()
 
+    logger and logger.call_start(f'copy_image')
     censored_img = img.copy()
+    logger and logger.call_end(f'copy_image')
 
-    for box in roi_boxes:
+    for i,box in enumerate(roi_boxes):
         if is_polygon(box):
             pts = np.array(box, dtype=np.int32)
-            cv2.fillPoly(censored_img, [pts], color=(0, 0, 0))
         else:
             left, top, right, bottom = map(int, box)
-            cv2.rectangle(censored_img, (left, top), (right, bottom), color=(0, 0, 0), thickness=-1)
+            pts = np.array([
+                [left,  top],
+                [right, top],
+                [right, bottom],
+                [left,  bottom]
+            ], dtype=np.int32)
+        if partial_coverage[i]==False:
+            logger and logger.call_start(f'fill_region')
+            cv2.fillPoly(censored_img, [pts], color=(0, 0, 0))
+            logger and logger.call_end(f'fill_region')
+        else:
+            thickness_pct=kwargs.get('thickness_pct',0.1)
+            spacing_mult=kwargs.get('spacing_mult',0.5)
+            logger and logger.call_start(f'fill_striped_region')
+            fill_polygon_striped_relative(
+                censored_img, pts,
+                thickness_pct=thickness_pct,
+                spacing_mult=spacing_mult
+            )
+            logger and logger.call_end(f'fill_striped_region')
 
     if verbose:
         _t1 = perf_counter()
         print(f"censor_image: num_rois={len(roi_boxes)} time={( _t1 - _t0 ):0.6f}s")
-
+    logger and logger.call_end(f'save_censored_image')
     return censored_img

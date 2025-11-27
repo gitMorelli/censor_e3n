@@ -2,17 +2,19 @@
 import argparse
 import logging
 import os
+import shutil
 
 import cv2
 #from src.utils.convert_utils import pdf_to_png_images
 from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number
-from src.utils.file_utils import get_basename, create_folder, check_name_matching
+from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder
 from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
 from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image
+from src.utils.logging import FileWriter
 from PIL import Image
 import numpy as np 
 
@@ -50,7 +52,12 @@ def parse_args():
         help="Enable debug logging",
     )
     parser.add_argument(
-        "--skip_checking",
+        "--skip_checking_1",
+        action="store_true",
+        help="Skip checking for matching annotation and numpy files",
+    )
+    parser.add_argument(
+        "--skip_checking_2",
         action="store_true",
         help="Skip checking for matching annotation and numpy files",
     )
@@ -64,7 +71,220 @@ def parse_args():
         action="store_true",
         help="Enlarge censor boxes before applying censorship",
     )
+    parser.add_argument(
+        "--save_debug_images",
+        action="store_true",
+        help="Enlarge censor boxes before applying censorship",
+    )
+
+    parser.add_argument(
+        "--save_debug_times",
+        action="store_true",
+        help="Enlarge censor boxes before applying censorship",
+    )
     return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    if args.verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+
+    skip_checking_1 = args.skip_checking_1
+    skip_checking_2 = args.skip_checking_2
+    skip_aligning = args.skip_aligning
+    save_path = args.save_path
+    annotation_path = args.annotation_path
+    filled_path = args.filled_path
+    enlarge_censor_boxes = args.enlarge_censor_boxes
+    save_debug_images = args.save_debug_images
+    save_debug_times = args.save_debug_times
+
+    #remove files and folders to generate
+    remove_folder(save_path)
+    if save_debug_images : remove_folder(os.path.join(SOURCE,'debug'))
+    if save_debug_times :remove_folder(os.path.join(SOURCE,'time_logs'))
+
+    logger.info("Starting PDF -> PNG conversion")
+    logger.debug("Output folder: %s", save_path)
+    logger.debug("Annotation folder: %s", annotation_path)
+    logger.debug("Filled folder: %s", filled_path)
+    logger.debug("Skip checking %s, Skip aligning %s",skip_checking_1,skip_checking_2,skip_aligning)
+
+    annotation_files = list_files_with_extension(annotation_path, "xml", recursive=False)
+    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
+    if not annotation_files:
+        logger.warning("No annotation files found. Exiting.")
+        return 0
+
+    annotation_file_names = [get_basename(annotation_file, remove_extension=True) for annotation_file in annotation_files]
+    filled_folders = list_subfolders(filled_path, recursive=False)
+    filled_folder_names = [get_basename(p, remove_extension=False) for p in filled_folders]
+    logger.debug("Filled folder names: %s", len(filled_folder_names))
+
+    annotation_roots, npy_data = load_template_info(annotation_files,annotation_file_names,annotation_path)
+
+    log_path=os.path.join(SOURCE,'time_logs')
+    create_folder(log_path, parents=True, exist_ok=True)
+    global_time_logger=FileWriter(save_debug_times,
+                                    os.path.join(log_path,f"global_time_logger.txt"))
+    warning_map=[[] for _ in range(len(filled_folders))]
+    # i iterate on the filled_folders (study subjects)
+    for j, filled_folder in enumerate(filled_folders): #subject level
+        warning_map[j]=[[] for _ in range(len(annotation_files))]
+        subj_id=filled_folder_names[j]
+        #I load the documents for the ith subject
+        documents = list_subfolders(filled_folder, recursive=False) # the document paths for the jth subject
+        documents_folder_names = [get_basename(p, remove_extension=False) for p in documents]
+        logger.debug("Document folder names for subject %s: %s", j, documents_folder_names)
+
+        # I match them with the annotation file names (will be a more complex function, in this test the names are the same)
+        #check that names match
+        if check_name_matching(annotation_file_names, documents_folder_names, logger) == 1:
+            logger.error(f"Mismatch between annotation files and document folders for subject {j}. Exiting.")
+            return 1
+        #check that they are sorted in the same way
+        assert annotation_file_names == documents_folder_names, "Annotation files and documents folders are not in the same order."
+        
+        #i can access them by index since they are sorted in the same way
+        for i, annotation_file in enumerate(annotation_files): #document level
+
+            doc_path = documents[i] #the file path for the ith document of the jth subject
+            doc_files = list_files_with_extension(doc_path, ['png','tif'], recursive=False)
+            sorted_files=sort_files_by_page_number(doc_files)
+
+            #load the xml file
+            root = annotation_roots[i]
+            npy_dict = npy_data[i]
+
+            #iterate on the xml entries (images level)
+            for img in iter_images(root):
+                warning_map[j][i].append([0,0])
+                img_id= img.id
+
+                log_path=os.path.join(SOURCE,'time_logs', f"patient_{subj_id}", f"document_{i}")
+                create_folder(log_path, parents=True, exist_ok=True)
+                image_time_logger=FileWriter(save_debug_times,
+                                             os.path.join(log_path,f"time_logger_page_{img_id}.txt"))
+                img_name=img.name
+                img_size = (img.width, img.height)
+                #get censor boxes
+                censor_boxes,partial_coverage = get_censor_boxes(root,img_id)
+                png_img_path = find_corresponding_file(sorted_files, img_name)
+                #load image with cv2 and pre_computed rois
+                mode="cv2"
+                if len(censor_boxes)<=0:
+                    logger.debug("Skip image: id=%s, name=%s, size=%s, no censor regions", img_id, img_name, img_size)
+                    image_time_logger.call_start('copy_image')
+                    copy_image(png_img_path, save_path,subj_id,i,img_id)
+                    image_time_logger.call_end('copy_image')
+                else:
+                    logger.debug("Processing image: id=%s, name=%s, size=%s", img_id, img_name, img_size)
+                    #find the corresponding png image in the template folder
+                    image_time_logger.call_start('load_image')
+                    img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
+                    image_time_logger.call_end('load_image')
+
+                    pre_computed = npy_dict[img_id]
+                    #logger.debug("Pre-computed data keys for image %s: %s", img_name, pre_computed)
+
+                    #check if templates are aligned
+                    roi_boxes, pre_computed_rois = get_roi_boxes(root,pre_computed,img_id)
+                    decision_1=False
+                    if not skip_checking_1:
+                        decision_1 = page_vote(img, roi_boxes, min_votes=2, template_png=None, pre_computed_rois=pre_computed_rois,logger=image_time_logger)
+                        #start logging of all nested function if active
+                    if save_debug_images:
+                        align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,img_id)
+                        debug_boxes=align_boxes+roi_boxes+censor_boxes
+                        colors=["red" for i in range(len(align_boxes))]+["green" for i in range(len(roi_boxes))]+["blue" for i in range(len(censor_boxes))]
+                        parent_path=os.path.join(SOURCE,'debug', f"patient_{subj_id}", f"document_{i}")#, f"censored_page_{n_page}.png")
+                        create_folder(parent_path, parents=True, exist_ok=True)
+                        save_debug_path=os.path.join(parent_path, f"{img_id}_original_w_boxes.png")
+                        plot_rois_on_image(img, debug_boxes, save_debug_path,colors=colors)
+                    
+                    decision_2=False
+                    if not skip_aligning and not decision_1:
+                        image_time_logger.call_start('alignement_and_check',block=True)
+                        image_time_logger.call_start('alignement_only')
+                        align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,img_id)
+
+                        image_time_logger.call_start('compute_misalignement')
+                        shifts, centers = compute_misalignment(img, align_boxes, img_size,scale_factor=2,pre_computed_rois=pre_computed_align)
+                        image_time_logger.call_end('compute_misalignement')
+
+                        image_time_logger.call_start('compute_transformation')
+                        scale_factor, shift_x, shift_y, angle_degrees,reference = compute_transformation(shifts, centers)
+                        image_time_logger.call_end('compute_transformation')
+                        #new/template , new-template, new-template
+                        if not skip_checking_2:
+                            new_roi_boxes = []
+                            new_align_boxes = []
+                            for coord in roi_boxes: 
+                                image_time_logger.call_start('apply_transformation_roi')
+                                new_coord = apply_transformation(reference,coord, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
+                                image_time_logger.call_end('apply_transformation_roi')
+                                new_roi_boxes.append(new_coord)
+                            if save_debug_images:
+                                for coord in align_boxes:
+                                    new_coord = apply_transformation(reference, coord, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
+                                    new_align_boxes.append(new_coord)
+                            
+                            image_time_logger.call_end('alignement_only')
+                            decision_2 = page_vote(img, new_roi_boxes, min_votes=2, template_png=None, 
+                                                   pre_computed_rois=pre_computed_rois,logger=image_time_logger)  
+                        image_time_logger.call_end('alignement_and_check',block=True)
+                    
+                    if decision_1:
+                        decision_2 = True
+
+                    image_time_logger.call_start('censoring',block=True)
+                    # increase size of censor boxes
+                    if enlarge_censor_boxes:
+                        image_time_logger.call_start(f'enlarge_{len(censor_boxes)}_censor_regions')
+                        new_censor_boxes = []
+                        for coord in censor_boxes:
+                            new_coord = enlarge_crop_coords(coord, scale_factor=1.2, img_shape=img_size)
+                            new_censor_boxes.append(new_coord)
+                        censor_boxes = new_censor_boxes
+                        image_time_logger.call_end(f'enlarge_{len(censor_boxes)}_censor_regions')
+                    #transform censor box regions if documents need aligning
+                    if not skip_aligning and not decision_1:
+                        new_censor_boxes = []
+                        for coord in censor_boxes:
+                            image_time_logger.call_start('apply_transformation_censor')
+                            new_coord = apply_transformation(reference, coord, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
+                            image_time_logger.call_end('apply_transformation_censor')
+                            new_censor_boxes.append(new_coord)
+                        censor_boxes=new_censor_boxes
+                    
+                    if save_debug_images and not decision_1:
+                        debug_boxes=new_align_boxes+new_roi_boxes+new_censor_boxes
+                        colors=["red" for i in range(len(align_boxes))]+["green" for i in range(len(roi_boxes))]+["blue" for i in range(len(censor_boxes))]
+                        parent_path=os.path.join(SOURCE,'debug', f"patient_{subj_id}", f"document_{i}")#, f"censored_page_{n_page}.png")
+                        create_folder(parent_path, parents=True, exist_ok=True)
+                        save_debug_path=os.path.join(parent_path, f"{img_id}_aligned_w_boxes.png")
+                        #plot_rois_on_image(img, debug_boxes, save_path,colors=colors)
+                        plot_both_rois_on_image(img, roi_boxes+align_boxes, new_roi_boxes+new_align_boxes, os.path.join(parent_path, f"{img_id}_both_roi_boxes.png"),color_1="red", color_2="green")
+                        plot_rois_on_image_polygons(img, debug_boxes, save_debug_path,colors)
+                    
+                    #save the censored image
+                    warning=str(1-int(decision_1))+str(1-int(decision_2)) #true decision becomes 1 which becomes '0' in the warning
+                    warning_map[j][i][-1] = [1-int(decision_1), 1-int(decision_2)]
+                    save_censored_image(img, censor_boxes, save_path,subj_id,i,img_id,
+                                        warning=warning,partial_coverage=partial_coverage,
+                                        thickness_pct=0.2, spacing_mult=0.5,logger=image_time_logger)
+                    image_time_logger.call_end('censoring',block=True)
+                    image_time_logger.call_end('complete_process',block=True)
+    #save warning_map as npy file
+    warning_map_path=os.path.join(save_path, "warning_map.npy")
+    np.save(warning_map_path, np.array(warning_map, dtype=object))
+    '''warning_map = np.load(warning_map_path, allow_pickle=True)'''
+    logger.debug("Warning map: %s", warning_map)
+    logger.info("Conversion finished")
+    global_time_logger.call_end('complete_process')
+    return 0
 
 #i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
 def load_template_info(annotation_files,annotation_file_names,annotation_path):
@@ -124,12 +344,18 @@ def get_align_boxes(root,pre_computed,img_id):
 
 def get_censor_boxes(root,img_id):
     roi_boxes = []
+    partial_coverage=[]
     i=0
     for box in iter_boxes(root, image_id=img_id):
+        is_partial=box.attributes.get("partial")
+        if is_partial=="true":
+            partial_coverage.append(True)
+        else:
+            partial_coverage.append(False)
         if box.label == "censor":
             roi_boxes.append(get_box_coords(box))
         i+=1
-    return roi_boxes
+    return roi_boxes, partial_coverage
 
 def find_corresponding_file(sorted_files, img_name):
     index=get_page_number(img_name)
@@ -137,152 +363,29 @@ def find_corresponding_file(sorted_files, img_name):
         return sorted_files[index-1]
     return None
 
-def save_censored_image(img, censor_boxes, save_path,n_p,n_doc,n_page,warning='00', verbose=False):
+def save_censored_image(img, censor_boxes, save_path,n_p,n_doc,n_page,warning='00', verbose=False,partial_coverage=None,logger=None,**kwargs):
     parent_path=os.path.join(save_path, f"patient_{n_p}", f"document_{n_doc}")#, f"censored_page_{n_page}.png")
     create_folder(parent_path, parents=True, exist_ok=True)
     save_path=os.path.join(parent_path, f"censored_page_w{warning}_{n_page}.png")
-    censored_img = censor_image(img, censor_boxes, verbose=verbose)
+    censored_img = censor_image(img, censor_boxes, verbose=verbose,partial_coverage=partial_coverage,logger=logger,**kwargs)
+    logger and logger.call_start(f'writing_to_memory')
     cv2.imwrite(str(save_path), censored_img)
+    logger and logger.call_end(f'writing_to_memory')
 
-def main():
-    args = parse_args()
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-        logging.getLogger().setLevel(logging.DEBUG)
+def copy_image(src_path, dest_folder,n_p,n_doc,n_page):
+    """
+    Copy an image file from src_path to the destination folder.
+    
+    Parameters:
+        src_path (str): Full path to the source image file.
+        dest_folder (str): Path to the destination folder.
+    """
+    # Build the destination file path
+    dest_path = os.path.join(dest_folder, f"patient_{n_p}", f"document_{n_doc}")
+    create_folder(dest_path, parents=True, exist_ok=True)
+    save_path=os.path.join(dest_path, f"censored_page_w00_{n_page}.png")
 
-    skip_checking = args.skip_checking
-    skip_aligning = args.skip_aligning
-    save_path = args.save_path
-    annotation_path = args.annotation_path
-    filled_path = args.filled_path
-    enlarge_censor_boxes = args.enlarge_censor_boxes
-
-    logger.info("Starting PDF -> PNG conversion")
-    logger.debug("Output folder: %s", save_path)
-    logger.debug("Annotation folder: %s", annotation_path)
-    logger.debug("Filled folder: %s", filled_path)
-
-    annotation_files = list_files_with_extension(annotation_path, "xml", recursive=False)
-    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
-    if not annotation_files:
-        logger.warning("No annotation files found. Exiting.")
-        return 0
-
-    annotation_file_names = [get_basename(annotation_file, remove_extension=True) for annotation_file in annotation_files]
-    filled_folders = list_subfolders(filled_path, recursive=False)
-    filled_folder_names = [get_basename(p, remove_extension=False) for p in filled_folders]
-    logger.debug("Filled folder names: %s", len(filled_folder_names))
-
-    annotation_roots, npy_data = load_template_info(annotation_files,annotation_file_names,annotation_path)
-
-    warning_map=[[] for _ in range(len(filled_folders))]
-    # i iterate on the filled_folders (study subjects)
-    for j, filled_folder in enumerate(filled_folders): #subject level
-        warning_map[j]=[[] for _ in range(len(annotation_files))]
-        #I load the documents for the ith subject
-        documents = list_subfolders(filled_folder, recursive=False) # the document paths for the jth subject
-        documents_folder_names = [get_basename(p, remove_extension=False) for p in documents]
-        logger.debug("Document folder names for subject %s: %s", j, documents_folder_names)
-
-        # I match them with the annotation file names (will be a more complex function, in this test the names are the same)
-        #check that names match
-        if check_name_matching(annotation_file_names, documents_folder_names, logger) == 1:
-            logger.error(f"Mismatch between annotation files and document folders for subject {j}. Exiting.")
-            return 1
-        #check that they are sorted in the same way
-        assert annotation_file_names == documents_folder_names, "Annotation files and documents folders are not in the same order."
-        
-        #i can access them by index since they are sorted in the same way
-        for i, annotation_file in enumerate(annotation_files): #document level
-            logger.info("Processing file %d/%d: %s", i + 1, len(annotation_files), annotation_file)
-            doc_path = documents[i] #the file path for the ith document of the jth subject
-            doc_files = list_files_with_extension(doc_path, "all", recursive=False)
-            sorted_files=sort_files_by_page_number(doc_files)
-
-            #load the xml file
-            root = annotation_roots[i]
-            npy_dict = npy_data[i]
-
-            #iterate on the xml entries (images level)
-            for img in iter_images(root):
-                warning_map[j][i].append([0,0])
-                img_id= img.id
-                img_name=img.name
-                img_size = (img.width, img.height)
-                logger.debug("Processing image: id=%s, name=%s, size=%s", img_id, img_name, img_size)
-                #find the corresponding png image in the template folder
-                png_img_path = find_corresponding_file(sorted_files, img_name)
-                if not os.path.exists(png_img_path):
-                    logger.error("PNG image not found for annotation image %s: expected at %s", img_name, png_img_path)
-                    continue
-                #load image with cv2 and pre_computed rois
-                mode="cv2"
-                img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
-                pre_computed = npy_dict[img_id]
-                #logger.debug("Pre-computed data keys for image %s: %s", img_name, pre_computed)
-
-                #check if templates are aligned
-                roi_boxes, pre_computed_rois = get_roi_boxes(root,pre_computed,img_id)
-                decision_1=False
-                if not skip_checking:
-                    decision_1 = page_vote(img, roi_boxes, min_votes=3, template_png=None, pre_computed_rois=pre_computed_rois)
-
-                decision_2=False
-                if not skip_aligning and not decision_1:
-                    align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,img_id)
-                    shifts, centers = compute_misalignment(img, align_boxes, img_size,scale_factor=2,pre_computed_rois=pre_computed_align)
-                    logger.debug("Computed misalignment for image %s: %s", img_name, shifts)
-                    scale_factor, shift_x, shift_y, angle_degrees,reference = compute_transformation(shifts, centers)
-                    #new/template , new-template, new-template
-                    logger.info("Computed transformation for image %s: scale_factor=%.4f, median_shift_x=%d, median_shift_y=%d, angle_degrees=%.2f", img_name, scale_factor, shift_x, shift_y, angle_degrees)
-                    if not skip_checking:
-                        new_roi_boxes = []
-                        new_align_boxes = []
-                        for coord in roi_boxes: 
-                            new_coord = apply_transformation(reference,coord, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
-                            new_roi_boxes.append(new_coord)
-                        '''for coord in align_boxes:
-                            new_coord = apply_transformation(reference, coord, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
-                            new_align_boxes.append(new_coord)'''
-                        #plot_rois_on_image(img, roi_boxes, f'test_{img_name}.png',color="red")
-                        #plot_rois_on_image(img, new_roi_boxes, f'test_transformed_{img_name}.png',color="green")
-                        #plot_both_rois_on_image(img, align_boxes, new_align_boxes, f'test_both_{img_name}.png',color_1="red", color_2="green")
-                        #plot_both_rois_on_image(img, roi_boxes, new_roi_boxes, f'test_both_{img_name}.png',color_1="red", color_2="green")
-                        #plot_rois_on_image_polygons(img, new_roi_boxes, f'test_polygons_{img_name}.png',color="blue")
-                        decision_2 = page_vote(img, new_roi_boxes, min_votes=2, template_png=None, pre_computed_rois=pre_computed_rois)  
-                #get censor boxes
-                censor_boxes = get_censor_boxes(root,img_id)
-                # increase size of censor boxes
-                if enlarge_censor_boxes:
-                    new_censor_boxes = []
-                    for coord in censor_boxes:
-                        new_coord = enlarge_crop_coords(coord, scale_factor=2, img_shape=img_size)
-                        new_censor_boxes.append(new_coord)
-                    censor_boxes = new_censor_boxes
-                #transform censor box regions if documents need aligning
-                if not skip_aligning and not decision_1:
-                    new_censor_boxes = []
-                    for coord in censor_boxes:
-                        new_coord = apply_transformation(reference, coord, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
-                        new_censor_boxes.append(new_coord)
-                    censor_boxes=new_censor_boxes
-                # censor the regions in the image (blacken them)
-                censored_img = censor_image(img, censor_boxes, verbose=False)
-                
-                #save the censored image
-                warning=str(1-int(decision_1))+str(1-int(decision_2)) #true decision becomes 1 which becomes '0' in the warning
-                warning_map[j][i][-1] = [1-int(decision_1), 1-int(decision_2)]
-                save_censored_image(img, censor_boxes, save_path,j,i,img_id,warning=warning)
-                #save warning_map as npy file
-                warning_map_path=os.path.join(save_path, "warning_map.npy")
-                np.save(warning_map_path, np.array(warning_map, dtype=object))
-                '''warning_map = np.load(warning_map_path, allow_pickle=True)'''
-                
-
-    logger.debug("Warning map: %s", warning_map)
-    logger.info("Conversion finished")
-    return 0
-
+    shutil.copy2(src_path, save_path)  # copy2 preserves metadata
 
 if __name__ == "__main__":
     main()

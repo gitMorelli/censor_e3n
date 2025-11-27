@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import List, Union
 from PIL import Image
+import os
+import shutil
 
 def list_files_with_extension(
     folder: Union[str, Path],
@@ -168,3 +170,18 @@ def sort_files_by_page_number(file_paths: List[Union[str, Path]]) -> List[Path]:
         file_paths: List of file paths (strings or Paths)."""
     return sorted(file_paths, key=lambda p: get_page_number(str(p)))
     
+def remove_folder(folder_path):
+    """
+    Delete a folder and all of its contents.
+
+    Parameters:
+        folder_path (str): Path to the folder to delete.
+    """
+    if os.path.exists(folder_path):
+        try:
+            shutil.rmtree(folder_path)
+            print(f"Folder removed: {folder_path}")
+        except Exception as e:
+            print(f"Error removing folder: {e}")
+    else:
+        print("Folder does not exist.")
