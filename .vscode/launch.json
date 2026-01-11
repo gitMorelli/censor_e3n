@@ -93,8 +93,21 @@
                 //"--enlarge_censor_boxes",
                 //"--save_debug_images",
                 "--save_debug_times",
-                "--skip_checking_2", //if i skip only this -> 29s
+                //"--skip_checking_2", //if i skip only this -> 29s
                 //"--skip_checking_1" //if i skip both -> 16.9s
+            ]
+        },
+        {
+            "name": "Python Debugger: tests (LocalEnv)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "src.scripts.tests",
+            "console": "integratedTerminal",
+            "python": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "args": [
             ]
     },
 ]
