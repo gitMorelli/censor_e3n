@@ -11,11 +11,11 @@ from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_
 from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder
 #from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
-from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json
+from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
-from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image
+from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
 from src.utils.logging import FileWriter
 from PIL import Image
 import numpy as np 
@@ -28,64 +28,12 @@ logger = logging.getLogger(__name__)
 
 SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests" #"Z:\\vscode\\censor_e3n\\data\\q5_tests" # "C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests"
 
-def parse_args():
-    """Handle command-line arguments."""
-    parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
-    parser.add_argument(
-        "-a", "--annotation_path",
-        default=SOURCE+"\\annotazioni",
-        help="Directory with the annotation files from cvat for each image",
-    )
-    parser.add_argument(
-        "-f", "--filled_path",
-        #default=SOURCE+"\\filled\\rimes",
-        default=SOURCE+"\\filled",
-        help="Directory with the files to censor",
-    )
-    parser.add_argument(
-        "-s", "--save_path",
-        default=SOURCE+"\\censored",
-        help="Directory where I save the final censored files",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    parser.add_argument(
-        "--skip_checking_1",
-        action="store_true",
-        help="Skip checking for matching annotation and numpy files",
-    )
-    parser.add_argument(
-        "--skip_checking_2",
-        action="store_true",
-        help="Skip checking for matching annotation and numpy files",
-    )
-    parser.add_argument(
-        "--skip_aligning",
-        action="store_true",
-        help="Skip alignment for matching annotation and numpy files",
-    )
-    parser.add_argument(
-        "--enlarge_censor_boxes",
-        action="store_true",
-        help="Enlarge censor boxes before applying censorship",
-    )
-    parser.add_argument(
-        "--save_debug_images",
-        action="store_true",
-        help="Enlarge censor boxes before applying censorship",
-    )
-
-    parser.add_argument(
-        "--save_debug_times",
-        action="store_true",
-        help="Enlarge censor boxes before applying censorship",
-    )
-    return parser.parse_args()
-
+# thresholds
+MIN_TO_CHECK_TEMPLATE = 4
+THRESHOLD_MATCHING = 0.7
+SCALE_FACTOR_MATCHING = 2 
+#global vars
+mode = 'cv2'
 
 def main():
     args = parse_args()
@@ -106,7 +54,7 @@ def main():
     #remove files and folders to generate
     remove_folder(save_path)
     if save_debug_images : remove_folder(os.path.join(SOURCE,'debug'))
-    if save_debug_times :remove_folder(os.path.join(SOURCE,'time_logs'))
+    if save_debug_times : remove_folder(os.path.join(SOURCE,'time_logs'))
 
     logger.debug("Output folder: %s", save_path)
     logger.debug("Annotation folder: %s", annotation_path)
@@ -132,6 +80,7 @@ def main():
     global_time_logger=FileWriter(save_debug_times,
                                     os.path.join(log_path,f"global_time_logger.txt"))
     warning_map=[[] for _ in range(len(filled_folders))]
+
     # i iterate on the filled_folders (study subjects)
     for j, filled_folder in enumerate(filled_folders): #subject level
         warning_map[j]=[[] for _ in range(len(annotation_files))]
@@ -160,10 +109,76 @@ def main():
             root = annotation_roots[i]
             pages_in_annotation = get_page_list(root)
             npy_dict = npy_data[i]
+            page_dictionary = [{} for p in pages_in_annotation]
 
-            #iterate on the xml entries (images level)
+            #iterate on the pages in a document
             for img_id in pages_in_annotation:
                 warning_map[j][i].append([0,0])
+
+                page_dictionary[img_id]['img_id']=img_id
+
+                censor_type=get_censor_type(root,img_id) 
+                page_dictionary[img_id]['type']=censor_type
+
+                img_name=f'page_{img_id}.png'
+                page_dictionary[img_id]['img_name']=img_name
+
+                png_img_path = find_corresponding_file(sorted_files, img_name)
+                page_dictionary[img_id]['img_path']=png_img_path
+
+                page_dictionary[img_id]['img_size']=get_page_dimensions(root,img_id)
+
+                page_dictionary[img_id]['template_matches']=0
+                page_dictionary[img_id]['shifts']=[(0,0),(0,0)] #(shift_x,shift_y) for first qnd second region
+                page_dictionary[img_id]['stored_template']=[None,None] # to store the features extracted from the region -> i don't recompute multiple times
+                
+                if censor_type!='N':
+                    img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
+                    page_dictionary[img_id]['img']=img.copy()
+                else:
+                    page_dictionary[img_id]['img']=None
+                
+            no_censor_mask = [d.get('type') == 'N' for d in page_dictionary] #mask to index on the pages that we don't need to censor
+            p_censor_mask = [d.get('type') == 'P' for d in page_dictionary] #mask to index on the pages that we can censor fast
+            censor_mask = [d.get('type') == 'C' for d in page_dictionary] #mask to index on the pages that we need to censor
+
+            #open extra pages if you don't have enough
+            N_to_censor = len(p_censor_mask)+len(censor_mask) 
+            to_add = MIN_TO_CHECK_TEMPLATE - N_to_censor
+            for d in page_dictionary[no_censor_mask]:
+                img_id=d['img_id']
+                if to_add>0:
+                    img=load_image(d['img_path'], mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
+                    page_dictionary[img_id]['img']=img.copy()
+                    to_add-=1
+                else:
+                    break
+            
+            #perform the check on exactly four pages
+            loaded_mask = [d.get('img') != None for d in page_dictionary]
+            for page in page_dictionary[loaded_mask][:MIN_TO_CHECK_TEMPLATE]:
+                img_id=page['img_id']
+                align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,img_id) 
+                page_dictionary[img_id]['align_boxes']=align_boxes
+                page_dictionary[img_id]['pre_computed_align']=pre_computed_align
+
+                shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
+                                     pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING)
+                
+                page_dictionary[img_id]['shifts']=shifts
+                page_dictionary[img_id]['centers'] = centers 
+                page_dictionary[img_id]['template_matches']=len(shifts)
+                page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
+            #count the matchign and decide if the test is passed
+            matching_pages = [d.get('template_matches') == 2  for d in page_dictionary] #mask to find matching pages
+            failed_first_ordering_test=False
+            if len(matching_pages)<4:
+                failed_first_ordering_test=True
+            
+            if failed_first_ordering_test:
+                pass
+
+            for img_id in pages_in_annotation:
 
                 log_path=os.path.join(SOURCE,'time_logs', f"patient_{subj_id}", f"document_{i}")
                 create_folder(log_path, parents=True, exist_ok=True)
@@ -176,7 +191,7 @@ def main():
                 censor_boxes,partial_coverage = get_censor_boxes(root,img_id)
                 png_img_path = find_corresponding_file(sorted_files, img_name)
                 #load image with cv2 and pre_computed rois
-                mode="cv2"
+                
                 if len(censor_boxes)<=0:
                     logger.debug("Skip image: id=%s, name=%s, size=%s, no censor regions", img_id, img_name, img_size)
                     image_time_logger.call_start('copy_image')
@@ -289,6 +304,8 @@ def main():
     global_time_logger.call_end('complete_process')
     return 0
 
+# Assistance function ---------------------------------------------------------------------------------------------------------------------
+
 #i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
 def load_template_info(annotation_files,annotation_file_names,annotation_path):
     annotation_roots=[]
@@ -400,6 +417,68 @@ def copy_image(src_path, dest_folder,n_p,n_doc,n_page):
     save_path=os.path.join(dest_path, f"censored_page_w00_{n_page}.png")
 
     shutil.copy2(src_path, save_path)  # copy2 preserves metadata
+
+# main blocks --------------------------------------------------------------------------------
+
+# parsing
+def parse_args():
+    """Handle command-line arguments."""
+    parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
+    parser.add_argument(
+        "-a", "--annotation_path",
+        default=SOURCE+"\\annotazioni",
+        help="Directory with the annotation files from cvat for each image",
+    )
+    parser.add_argument(
+        "-f", "--filled_path",
+        #default=SOURCE+"\\filled\\rimes",
+        default=SOURCE+"\\filled",
+        help="Directory with the files to censor",
+    )
+    parser.add_argument(
+        "-s", "--save_path",
+        default=SOURCE+"\\censored",
+        help="Directory where I save the final censored files",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--skip_checking_1",
+        action="store_true",
+        help="Skip checking for matching annotation and numpy files",
+    )
+    parser.add_argument(
+        "--skip_checking_2",
+        action="store_true",
+        help="Skip checking for matching annotation and numpy files",
+    )
+    parser.add_argument(
+        "--skip_aligning",
+        action="store_true",
+        help="Skip alignment for matching annotation and numpy files",
+    )
+    parser.add_argument(
+        "--enlarge_censor_boxes",
+        action="store_true",
+        help="Enlarge censor boxes before applying censorship",
+    )
+    parser.add_argument(
+        "--save_debug_images",
+        action="store_true",
+        help="Enlarge censor boxes before applying censorship",
+    )
+
+    parser.add_argument(
+        "--save_debug_times",
+        action="store_true",
+        help="Enlarge censor boxes before applying censorship",
+    )
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
     main()

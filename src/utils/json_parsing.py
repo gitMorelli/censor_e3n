@@ -121,6 +121,9 @@ def get_page_dimensions(json_data, target_page_number):
                 
     return None
 
+def get_censor_type(json_data, target_page_number):
+    return None
+
 def get_box_coords_json(box,image_size):
     width=image_size[0]
     height=image_size[1]

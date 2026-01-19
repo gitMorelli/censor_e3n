@@ -48,7 +48,8 @@ def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_cen
     shift_x = center_x - expected_x
     shift_y = center_y - expected_y
     return True,shift_x, shift_y
-def compute_misalignment(filled_png, rois, img_shape, scale_factor=2,template_png=None, pre_computed_rois=None):
+
+def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2, pre_computed_rois=None):
     if pre_computed_rois:
         pre_computed=True
     else:
@@ -57,22 +58,24 @@ def compute_misalignment(filled_png, rois, img_shape, scale_factor=2,template_pn
 
     shifts = []
     centers = []
+    processed_rois=[]
     for i,coord in enumerate(rois):
-        if not pre_computed:
-            t_roi = preprocess_alignment_roi(template_png, coord, mode=mode, verbose=False)
-        else:
-            t_roi = pre_computed_rois[i]['full']
         center_x, center_y = get_center(coord)
         new_coord = enlarge_crop_coords(coord, scale_factor=scale_factor, img_shape=img_shape)
         new_center_x, new_center_y = get_center(new_coord)
         shift_wr_center = (new_center_x - center_x, new_center_y - center_y) #if the rescaled patch is not cropped 
         #we expect to find the template at w/2,h/2 in the referece frame of the enlarged patch; If it is cropped we expect to find it at -shift_wr_center
-        f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
+        t_roi = pre_computed_template[i]['full']
+        if not pre_computed:
+            f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
+        else:
+            f_roi = pre_computed_rois[i]
         is_matched,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,shift_wr_center=shift_wr_center)
         if is_matched: #only include regions for which you have a match
             shifts.append((shift_x, shift_y))
             centers.append((center_x, center_y))
-    return shifts, centers
+            processed_rois.append(f_roi)
+    return shifts, centers,processed_rois
 
 def compute_distance(c1,c2):
     return np.sqrt((c2[0] - c1[0]) ** 2 + (c2[1] - c1[1]) ** 2)
