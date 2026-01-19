@@ -1,7 +1,7 @@
 from pdf2image import convert_from_path
 import fitz  # PyMuPDF
 import os
-POPPLER_PATH = "Z:\\programs\\Release-25.11.0-0\\poppler-25.11.0\\Library\\bin" #"C:\\Program Files\\poppler-25.11.0\\Library\\bin"
+POPPLER_PATH = "\\vms-e34n-databr\\2025-handwriting\\programs\\Release-25.11.0-0\\poppler-25.11.0\\Library\\bin" #"Z:\\programs\\Release-25.11.0-0\\poppler-25.11.0\\Library\\bin" #"C:\\Program Files\\poppler-25.11.0\\Library\\bin"
 
 def pdf_to_images(pdf_path):
     """Convert PDF pages to PNG images.

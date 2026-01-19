@@ -3,11 +3,11 @@ import argparse
 import logging
 import json
 import os
-from src.utils.json_parsing import parse_document_annotations
+from src.utils.json_parsing import get_attributes_by_page
 from time import perf_counter
 
 
-JSON_PATH= "Z:\\vscode\censor_e3n\data\q5_tests\\annotazioni" 
+JSON_PATH= "//vms-e34n-databr/2025-handwriting\\vscode\censor_e3n\data\q5_tests\\annotazioni" 
 
 def parse_args():
     """Handle command-line arguments."""
@@ -35,13 +35,11 @@ def main():
     args = parse_args()
     with open(JSON_PATH+'\\doc_5.json', 'r') as f: data = json.load(f)
 
-    results = parse_document_annotations(data)
+    attributes_page_3 = get_attributes_by_page(data, 3) # Assumendo che 'data' sia definito
 
-    # Print results to verify
-    for item in results:
-        print(f"Page: {item['page_number']} | Label: {item['label']} | Sub-Attr: {item['sub_attribute']}")
-        print(f"  Geometry: {item['geometry']}")
-        print("-" * 30)
+    print(f"Trovate {len(attributes_page_3)} regioni nella pagina 3:")
+    for attr in attributes_page_3:
+        print(attr)
 
     return 0
 

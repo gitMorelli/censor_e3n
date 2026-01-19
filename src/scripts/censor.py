@@ -3,13 +3,15 @@ import argparse
 import logging
 import os
 import shutil
+import json
 
 import cv2
 #from src.utils.convert_utils import pdf_to_png_images
 from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number
 from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder
-from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
-from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
+#from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
+#from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
+from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
@@ -24,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "Z:\\vscode\\censor_e3n\\data\\q5_tests" # "C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests"
+SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests" #"Z:\\vscode\\censor_e3n\\data\\q5_tests" # "C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests"
 
 def parse_args():
     """Handle command-line arguments."""
@@ -106,18 +108,18 @@ def main():
     if save_debug_images : remove_folder(os.path.join(SOURCE,'debug'))
     if save_debug_times :remove_folder(os.path.join(SOURCE,'time_logs'))
 
-    logger.info("Starting PDF -> PNG conversion")
     logger.debug("Output folder: %s", save_path)
     logger.debug("Annotation folder: %s", annotation_path)
     logger.debug("Filled folder: %s", filled_path)
     logger.debug("Skip checking %s, Skip aligning %s",skip_checking_1,skip_checking_2,skip_aligning)
 
-    annotation_files = list_files_with_extension(annotation_path, "xml", recursive=False)
+    annotation_files = list_files_with_extension(annotation_path, "json", recursive=False)
     logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
     if not annotation_files:
         logger.warning("No annotation files found. Exiting.")
         return 0
 
+    print(annotation_path)
     annotation_file_names = [get_basename(annotation_file, remove_extension=True) for annotation_file in annotation_files]
     filled_folders = list_subfolders(filled_path, recursive=False)
     filled_folder_names = [get_basename(p, remove_extension=False) for p in filled_folders]
@@ -154,21 +156,22 @@ def main():
             doc_files = list_files_with_extension(doc_path, ['png','tif'], recursive=False)
             sorted_files=sort_files_by_page_number(doc_files)
 
-            #load the xml file
+            #load the json file
             root = annotation_roots[i]
+            pages_in_annotation = get_page_list(root)
             npy_dict = npy_data[i]
 
             #iterate on the xml entries (images level)
-            for img in iter_images(root):
+            for img_id in pages_in_annotation:
                 warning_map[j][i].append([0,0])
-                img_id= img.id
 
                 log_path=os.path.join(SOURCE,'time_logs', f"patient_{subj_id}", f"document_{i}")
                 create_folder(log_path, parents=True, exist_ok=True)
                 image_time_logger=FileWriter(save_debug_times,
                                              os.path.join(log_path,f"time_logger_page_{img_id}.txt"))
-                img_name=img.name
-                img_size = (img.width, img.height)
+                img_name=f'page_{img_id}.png'
+                img_size = get_page_dimensions(root,img_id)
+
                 #get censor boxes
                 censor_boxes,partial_coverage = get_censor_boxes(root,img_id)
                 png_img_path = find_corresponding_file(sorted_files, img_name)
@@ -303,7 +306,8 @@ def load_template_info(annotation_files,annotation_file_names,annotation_path):
 
     #i load the data i will use (xml first)
     for i, annotation_file in enumerate(annotation_files):
-        _ ,root = load_xml(annotation_file)
+        #_ ,root = load_xml(annotation_file)
+        with open(annotation_file, 'r') as f: root = json.load(f)
         annotation_roots.append(root)
     #then numpy arrays
     npy_data=[]
@@ -315,14 +319,17 @@ def load_template_info(annotation_files,annotation_file_names,annotation_path):
 def get_roi_boxes(root,pre_computed,img_id):
     roi_boxes = []
     pre_computed_rois = []
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
     i=0
-    for box in iter_boxes(root, image_id=img_id):
-        is_blank=box.attributes.get("blank")
-        if box.label == "roi" and is_blank=="false":
-            roi_boxes.append(get_box_coords(box))
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['label'] == "roi" and box['sub_attribute']=='standard':
+            roi_boxes.append(box_coords)
             pre_computed_rois.append(pre_computed[i])
-        elif box.label == "roi" and is_blank=="true":
-            blank_box=get_box_coords(box)
+        elif box['label'] == "roi" and box['sub_attribute']=="blank":
+            blank_box=box_coords
             pre_computed_blank=pre_computed[i]
             #print("Found blank box")
         i+=1
@@ -334,10 +341,14 @@ def get_roi_boxes(root,pre_computed,img_id):
 def get_align_boxes(root,pre_computed,img_id):
     roi_boxes = []
     pre_computed_rois = []
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
     i=0
-    for box in iter_boxes(root, image_id=img_id):
-        if box.label == "align":
-            roi_boxes.append(get_box_coords(box))
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['sub_attribute'] == "align":
+            roi_boxes.append(box_coords)
             pre_computed_rois.append(pre_computed[i])
         i+=1
     return roi_boxes, pre_computed_rois
@@ -345,15 +356,18 @@ def get_align_boxes(root,pre_computed,img_id):
 def get_censor_boxes(root,img_id):
     roi_boxes = []
     partial_coverage=[]
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
     i=0
-    for box in iter_boxes(root, image_id=img_id):
-        is_partial=box.attributes.get("partial")
-        if is_partial=="true":
-            partial_coverage.append(True)
-        else:
-            partial_coverage.append(False)
-        if box.label == "censor":
-            roi_boxes.append(get_box_coords(box))
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['label'] == "censor":
+            roi_boxes.append(box_coords)
+            if box['sub_attribute'] == "partial":
+                partial_coverage.append(True)
+            else:
+                partial_coverage.append(False)
         i+=1
     return roi_boxes, partial_coverage
 

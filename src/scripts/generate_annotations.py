@@ -2,11 +2,13 @@
 import argparse
 import logging
 import os
+import json
 
 from src.utils.file_utils import list_subfolders,list_files_with_extension
 from src.utils.file_utils import get_basename, create_folder, check_name_matching
-from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
-from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
+#from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
+#from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
+from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions, get_box_coords_json
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi
 from PIL import Image
@@ -18,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
+SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests" # "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
 
 def parse_args():
     """Handle command-line arguments."""
@@ -62,7 +64,7 @@ def main():
     logger.debug("Output folder: %s", save_path)
     logger.debug("Annotation folder: %s", annotation_path)
 
-    annotation_files = list_files_with_extension(annotation_path, "xml", recursive=False)
+    annotation_files = list_files_with_extension(annotation_path, "json", recursive=False)
     logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
     if not annotation_files:
         logger.warning("No annotation files found. Exiting.")
@@ -85,15 +87,15 @@ def main():
         logger.info("Processing file %d/%d: %s", i + 1, len(annotation_files), annotation_file)
         doc_path = template_folders[i]
         #pages = list_files_with_extension(doc_path, "png", recursive=False)
-        #load the xml file
-        annotation_tree,root = load_xml(annotation_file)
-        #iterate on the xml entries (images)
+        #load the json file
+        with open(annotation_file, 'r') as f: json_data = json.load(f)
+        pages_in_annotation = get_page_list(json_data)
+        #iterate on the images in the annotation file (page index)
         data_dict = {}
-        for img in iter_images(root):
-            img_id= img.id
+        for img_id in pages_in_annotation:
             data_dict[img_id]=[]
-            img_name=img.name
-            img_size = (img.width, img.height)
+            img_name=f'page_{img_id}.png'
+            img_size = get_page_dimensions(json_data,img_id)
             logger.debug("Processing image: id=%s, name=%s, size=%s", img_id, img_name, img_size)
             #find the corresponding png image in the template folder
             png_img_path = os.path.join(doc_path, img_name)
@@ -103,25 +105,25 @@ def main():
             #load image with cv2
             mode="cv2"
             img=load_image(png_img_path, mode=mode, verbose=False)
+            bb_list=get_attributes_by_page(json_data, img_id)
             #iterate on the selected boxes
-            for box in iter_boxes(root, image_id=img_id):
+            for box in bb_list:
                 #get coordinates
-                box_coords = get_box_coords(box)
+                box_coords=get_box_coords_json(box,img_size)
                 #check what kind of box it is
-                #i extract and savefeatures for roi, roi-blank, and align boxes
+                #i extract and save features for roi, roi-blank, and align boxes
                 pre_comp = None
-                if box.label == "align":
+                if box['sub_attribute']=='align':
                     pre_comp = {'full':preprocess_alignment_roi(img, box_coords, mode=mode, verbose=False)}
-                elif box.label == "roi":
-                    val = box.attributes.get("blank")
-                    if val=="true":
-                        patch = preprocess_blank_roi(img, box_coords, mode=mode, verbose=False)
-                        pre_comp = extract_features_from_blank_roi(patch, mode=mode, verbose=False,to_compute=['cc','n_black'])
-                    else:
-                        patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
-                        pre_comp = extract_features_from_roi(patch, mode=mode, 
-                                                            verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
+                elif box['sub_attribute']=='blank':
+                    patch = preprocess_blank_roi(img, box_coords, mode=mode, verbose=False)
+                    pre_comp = extract_features_from_blank_roi(patch, mode=mode, verbose=False,to_compute=['cc','n_black'])
+                elif box['sub_attribute']=='standard' and box['label']=='roi':
+                    patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
+                    pre_comp = extract_features_from_roi(patch, mode=mode, 
+                                                        verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
                 data_dict[img_id].append(pre_comp)
+
         #save data_dict as npy file
         save_folder = create_folder(save_path, parents=True, exist_ok=True)
         save_file_path = os.path.join(save_folder, f"{annotation_file_names[i]}.npy")

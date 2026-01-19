@@ -1,3 +1,5 @@
+//old path: Z:
+//new path: \\vms-e34n-databr\\2025-handwriting
 {
   "version": "2.0.0",
   "tasks": [
@@ -5,7 +7,7 @@
       //"label": "Python DEbugger: Censor on gustaveroussy",
       "label": "Python Debugger: censor (LocalEnv)",
       "type": "process",
-      "command": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "command": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",
       "args": ["${file}"],
       "group": {
         "kind": "build",
@@ -20,7 +22,7 @@
       //"label": "Python DEbugger: Censor on gustaveroussy",
       "label": "Python Debugger: png_from_pdf_q5_test (LocalEnv)",
       "type": "process",
-      "command": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "command": "//vms-e34n-databr//2025-handwriting:/programs/miniconda3/envs/LocalEnv/python.exe",
       "args": ["${file}"],
       "group": {
         "kind": "build",
@@ -35,7 +37,7 @@
       //"label": "Python DEbugger: Censor on gustaveroussy",
       "label": "Python Debugger: generate_annotations (LocalEnv)",
       "type": "process",
-      "command": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "command": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",
       "args": ["${file}"],
       "group": {
         "kind": "build",
@@ -50,7 +52,7 @@
       //"label": "Python DEbugger: Censor on gustaveroussy",
       "label": "Python Debugger: tests (LocalEnv)",
       "type": "process",
-      "command": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "command": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",
       "args": ["${file}"],
       "group": {
         "kind": "build",

@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TEMPLATES_PATH= "Z:\\vscode\\censor_e3n\\data\\q5_tests\\pdf_templates" #"C:\\Users\\andre\\PhD\\Datasets\\e3n\\e3n templates"
-SAVE_PATH="Z:\\vscode\\censor_e3n\\data\\q5_tests\\templates" #"C:\\Users\\andre\\PhD\\Datasets\\e3n\\e3n templates\\png_output"
+TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\pdf_templates" # "Z:\\vscode\\censor_e3n\\data\\q5_tests\\pdf_templates" #"C:\\Users\\andre\\PhD\\Datasets\\e3n\\e3n templates"
+SAVE_PATH="//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\templates" #"Z:\\vscode\\censor_e3n\\data\\q5_tests\\templates" #"C:\\Users\\andre\\PhD\\Datasets\\e3n\\e3n templates\\png_output"
 
 def parse_args():
     """Handle command-line arguments."""

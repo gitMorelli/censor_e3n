@@ -1,7 +1,8 @@
+//path: \\vms-e34n-databr\\2025-handwriting/programs/miniconda3/ 
 {
-    "python.defaultInterpreterPath": "Z:/programs/miniconda3/envs/LocalEnv/python.exe",
-    "python.pythonPath": "Z:programs/miniconda3/envs/LocalEnv/python.exe",
-    "python.condaPath": "Z:/programs/miniconda3/condabin/conda.bat",
+    "python.defaultInterpreterPath": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",
+    "python.pythonPath": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",
+    "python.condaPath": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/condabin/conda.bat",
     // IMPORTANT: stop using Jedi, switch to Pylance
     "python.languageServer": "Pylance",
     "python.terminal.activateEnvironment": true,
@@ -12,7 +13,7 @@
         "args": [
           "-NoExit",
           "-Command",
-          "& 'Z:\\\\programs\\\\miniconda3\\\\shell\\\\condabin\\\\conda-hook.ps1'; conda activate LocalEnv"
+          "& '\\\\vms-e34n-databr\\\\2025-handwriting\\\\programs\\\\miniconda3\\\\shell\\\\condabin\\\\conda-hook.ps1'; conda activate LocalEnv"
         ]
       }
     }

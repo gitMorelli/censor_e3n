@@ -278,7 +278,7 @@ def get_boxes_as_dicts(
 
 def get_box_coords(box: Box) -> Tuple[float, float, float, float]:
     """Return (xtl, ytl, xbr, ybr) from a Box dataclass."""
-    return box.xtl, box.ytl, box.xbr, box.ybr
+    return box.xtl, box.ytl, box.xbr, box.ybr 
 
 
 def get_box_center(box: Box) -> Tuple[float, float]:

@@ -13,8 +13,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TEMPLATES_PATH= "Z:\\vscode\\censor_e3n\\data\\q5_tests\\filled_non_converted" 
-SAVE_PATH="Z:\\vscode\\censor_e3n\\data\\q5_tests\\filled" 
+TEMPLATES_PATH= "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\filled_non_converted" #"Z:\\vscode\\censor_e3n\\data\\q5_tests\\filled_non_converted" 
+SAVE_PATH="//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\filled" #"Z:\\vscode\\censor_e3n\\data\\q5_tests\\filled" 
 
 def parse_args():
     """Handle command-line arguments."""
