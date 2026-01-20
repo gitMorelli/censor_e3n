@@ -74,7 +74,7 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
         if is_matched: #only include regions for which you have a match
             shifts.append((shift_x, shift_y))
             centers.append((center_x, center_y))
-            processed_rois.append(f_roi)
+        processed_rois.append(f_roi)
     return shifts, centers,processed_rois
 
 def compute_distance(c1,c2):

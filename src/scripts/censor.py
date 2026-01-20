@@ -130,7 +130,10 @@ def main():
 
                 page_dictionary[img_id]['template_matches']=0
                 page_dictionary[img_id]['shifts']=[(0,0),(0,0)] #(shift_x,shift_y) for first qnd second region
-                page_dictionary[img_id]['stored_template']=[None,None] # to store the features extracted from the region -> i don't recompute multiple times
+                page_dictionary[img_id]['stored_template']=None # to store the features extracted from the region -> i don't recompute multiple times
+                page_dictionary[img_id]['matched_page']=None #initially I have no matches
+                page_dictionary[img_id]['align_boxes']=None
+                page_dictionary[img_id]['pre_computed_align']=None
                 
                 if censor_type!='N':
                     img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
@@ -163,20 +166,71 @@ def main():
                 page_dictionary[img_id]['pre_computed_align']=pre_computed_align
 
                 shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
-                                     pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING)
+                                     pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING) #recall this functions returns a shift for each good match
+                #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
                 
-                page_dictionary[img_id]['shifts']=shifts
-                page_dictionary[img_id]['centers'] = centers 
-                page_dictionary[img_id]['template_matches']=len(shifts)
-                page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
+                if len(shifts)==2:
+                    page_dictionary[img_id]['shifts']=shifts
+                    page_dictionary[img_id]['centers'] = centers 
+                    page_dictionary[img_id]['template_matches']=1
+                    page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
+            
             #count the matchign and decide if the test is passed
-            matching_pages = [d.get('template_matches') == 2  for d in page_dictionary] #mask to find matching pages
+            matching_mask = [d.get('template_matches') == 1  for d in page_dictionary] #mask to find matching pages
+            matching_pages=page_dictionary[matching_mask]
             failed_first_ordering_test=False
             if len(matching_pages)<4:
                 failed_first_ordering_test=True
             
             if failed_first_ordering_test:
-                pass
+                for img_id in pages_in_annotation: # i precompute all align_boxes and store all pre_computed aligns
+                    page = page_dictionary[img_id]
+                    if page[img_id]['align_boxes']:
+                        align_boxes=page[img_id]['align_boxes']
+                        pre_computed_align=page[img_id]['pre_computed_align']
+                    else:
+                        align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,img_id) 
+                        page_dictionary[img_id]['align_boxes']=align_boxes
+                        page_dictionary[img_id]['pre_computed_align']=pre_computed_align
+                    
+                    # i need to load all the images
+                    img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
+                    page_dictionary[img_id]['img']=img.copy()
+                
+                for img_id in pages_in_annotation:
+                    page = page_dictionary[img_id]
+                    align_boxes=page[img_id]['align_boxes']
+
+                    for img_id_2 in pages_in_annotation:
+                        if img_id_2==img_id and (img_id in pages_in_annotation[loaded_mask]): #skip these that are already checked
+                            continue
+
+                        page_2=page_dictionary[img_id_2]
+                        pre_computed_align_2=page_2[img_id_2]['pre_computed_align']
+                        
+                        shifts, centers, processed_rois = compute_misalignment(page['img'], align_boxes, page['img_size'], 
+                                     pre_computed_template=pre_computed_align_2,scale_factor=SCALE_FACTOR_MATCHING, pre_computed_rois=page['stored_template'])
+                        #i pass both the image and the templates, if the templates has not been yet computed the stored_template entry is none and the function takes care of it
+                        if page['stored_template']==None:
+                            page_dictionary[img_id]['stored_template'] = processed_rois #so in next steps is not re-computed
+                        
+                        if len(shifts)==2: #if there is a match save the matching page number and increase the matcher count, also store the shift/centers for this msot recent match
+                            page_dictionary[img_id]['shifts']=shifts
+                            page_dictionary[img_id]['centers'] = centers 
+                            page_dictionary[img_id]['template_matches']+=1
+                            page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
+                            page_dictionary[img_id]['matched_page']=img_id_2
+
+                problematic_mask = [d.get('template_matches') != 1  for d in page_dictionary] #mask to find the pages that have multiple matches or no matches
+                problematic_pages = page_dictionary[problematic_mask]
+
+                if len(problematic_pages)=0: # no problematic pages -> i can reorder based on the matching I found
+                else:
+                    pass
+
+            else:
+                for img_id in pages_in_annotation:
+                    page_dictionary[img_id]['matched_page']=img_id #if the test is passed they are orthered correctly -> i match with corresponding index
 
             for img_id in pages_in_annotation:
 
