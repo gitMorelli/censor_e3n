@@ -224,38 +224,47 @@ def main():
                 problematic_mask = [d.get('template_matches') != 1  for d in page_dictionary] #mask to find the pages that have multiple matches or no matches
                 problematic_pages = page_dictionary[problematic_mask]
 
-                if len(problematic_pages)=0: # no problematic pages -> i can reorder based on the matching I found
-                else:
+                if len(problematic_pages)!=0: # if there are problematic pages i need to process further
+                    #add the code to match the pages with hashmap and check with ocr
                     pass
-
             else:
                 for img_id in pages_in_annotation:
                     page_dictionary[img_id]['matched_page']=img_id #if the test is passed they are orthered correctly -> i match with corresponding index
-
+            
+            #at this stage I have ordered the pages in the best possible way and identified the documents for which 
+            # i had to re shuffle and for which i am not sure of the re-ordering
             for img_id in pages_in_annotation:
 
                 log_path=os.path.join(SOURCE,'time_logs', f"patient_{subj_id}", f"document_{i}")
                 create_folder(log_path, parents=True, exist_ok=True)
                 image_time_logger=FileWriter(save_debug_times,
                                              os.path.join(log_path,f"time_logger_page_{img_id}.txt"))
-                img_name=f'page_{img_id}.png'
-                img_size = get_page_dimensions(root,img_id)
+                
+                page=page_dictionary[img_id]
+                matched_id=page[img_id]['matched_page'] #this is different from img_id only if i have reordered the pages
+                matched_page=page_dictionary[matched_id]
+                img_name=page['img_name']
+                img_size = page['img_size']
+                png_img_path = page['img_path']
 
                 #get censor boxes
                 censor_boxes,partial_coverage = get_censor_boxes(root,img_id)
-                png_img_path = find_corresponding_file(sorted_files, img_name)
-                #load image with cv2 and pre_computed rois
                 
-                if len(censor_boxes)<=0:
+                if page_dictionary[img_id]['type']=='N':
                     logger.debug("Skip image: id=%s, name=%s, size=%s, no censor regions", img_id, img_name, img_size)
                     image_time_logger.call_start('copy_image')
                     copy_image(png_img_path, save_path,subj_id,i,img_id)
                     image_time_logger.call_end('copy_image')
+                elif page_dictionary[img_id]['type']=='P':
+                    get_censor_subtype(root,img_id) 
                 else:
                     logger.debug("Processing image: id=%s, name=%s, size=%s", img_id, img_name, img_size)
                     #find the corresponding png image in the template folder
                     image_time_logger.call_start('load_image')
-                    img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
+                    if page['img']==None:
+                        img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
+                    else:
+                        img=page['img']
                     image_time_logger.call_end('load_image')
 
                     pre_computed = npy_dict[img_id]
