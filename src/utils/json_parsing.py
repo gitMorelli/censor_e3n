@@ -122,6 +122,11 @@ def get_page_dimensions(json_data, target_page_number):
     return None
 
 def get_censor_type(json_data, target_page_number):
+    for entry in json_data:
+        # Check if this entry corresponds to the target page
+        if extract_page_number(entry.get('image', '')) == target_page_number:
+            
+            return entry.get('image_type', '') 
     return None
 
 def get_box_coords_json(box,image_size):

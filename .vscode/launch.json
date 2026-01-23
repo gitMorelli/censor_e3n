@@ -91,7 +91,8 @@
             "console": "integratedTerminal",
             "python": "//vms-e34n-databr//2025-handwriting/programs/miniconda3//envs/LocalEnv/python.exe",
             "env": {
-                "PYTHONPATH": "${workspaceFolder}"
+                "PYTHONPATH": "${workspaceFolder}",
+                "QT_QPA_PLATFORM_PLUGIN_PATH":"//vms-e34n-databr//2025-handwriting\\programs\\miniconda3\\envs\\LocalEnv\\Library\\lib\\qt6\\plugins\\platforms"
             },
             "args": [
                 //"--verbose",
