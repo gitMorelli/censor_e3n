@@ -14,6 +14,7 @@ from src.utils.file_utils import get_basename, create_folder, check_name_matchin
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
+from src.utils.feature_extraction import extract_features_from_page, preprocess_page
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
 from src.utils.logging import FileWriter
@@ -33,6 +34,7 @@ SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests
 MIN_TO_CHECK_TEMPLATE = 4
 THRESHOLD_MATCHING = 0.7
 SCALE_FACTOR_MATCHING = 2 
+
 #global vars
 mode = 'cv2'
 N_ALIGN_REGIONS=2 #number of align boxes used for template matching
@@ -138,11 +140,14 @@ def main():
                 page_dictionary[img_id]['stored_template']=None # to store the features extracted from the align regions 
                 #for the page (will be overwritten each time i compare with diff template)
                 page_dictionary[img_id]['matched_page']=None #initially I assume the page is matched to the same index template
+                page_dictionary[img_id]['page_phash']=None
 
                 censor_type=get_censor_type(root,img_id) 
                 template_dictionary[img_id]['type']=censor_type
                 template_dictionary[img_id]['align_boxes']=None #the coordinates of the align boxes for a template
-                page_dictionary[img_id]['pre_computed_align']=None #the pre computed values for the align region in the template
+                template_dictionary[img_id]['pre_computed_align']=None #the pre computed values for the align region in the template
+                template_dictionary[img_id]['matched_to_this']=0
+                template_dictionary[img_id]['page_phash']=None
                 
                 #i load in memory only the pages that needs censoring or partial censoring at the beginning
                 if censor_type!='N':
@@ -177,6 +182,7 @@ def main():
                 align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,t_id) 
                 template_dictionary[t_id]['align_boxes']=align_boxes
                 template_dictionary[t_id]['pre_computed_align']=pre_computed_align
+                template_dictionary[t_id]['page_phash']=pre_computed[-1]['page_phash']
 
                 shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
                                      pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING) #recall this functions returns a shift for each good match
@@ -188,6 +194,7 @@ def main():
                     page_dictionary[img_id]['template_matches']=1
                     page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
                     page_dictionary[img_id]['matched_page']=t_id
+                    template_dictionary[img_id]['matched_to_this']+=1
                 
             
             correct_pages_step_1 = [p for p in pages_in_annotation if page_dictionary[p]['template_matches']==1]
@@ -203,6 +210,11 @@ def main():
                     if page['img'] is None:
                         img=load_image(page['img_path'], mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
                         page_dictionary[img_id]['img']=img.copy()
+                    
+                    preprocessed_img = preprocess_page(page['img'])
+                    CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
+                    pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
+                    page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
                 
                 for img_id in pages_in_annotation:
                     if img_id in correct_pages_step_1:
@@ -230,10 +242,14 @@ def main():
                             page_dictionary[img_id]['template_matches']+=1
                             page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing in the next alignement/censorign phase
                             page_dictionary[img_id]['matched_page']=t_id
+                            template_dictionary[t_id]['matched_to_this']+=1
 
                 problematic_pages = [p for p in pages_in_annotation if page_dictionary[p]['template_matches']!=1]
+                problematic_templates = [p for p in templates_to_consider if template_dictionary[p]['matched_to_this']!=1]
 
-                if len(problematic_pages)>1: # if there are problematic pages i need to process further; If only one is left out i check it regardless
+                #i perform phash matching
+
+                if len(problematic_pages)>1 or len(problematic_templates)>1: # if there are problematic pages i need to process further; If only one is left out i check it regardless
                     #add the code to match the pages with hashmap and check with ocr
                     #print(f"n prob pages = {len(problematic_pages)}")
                     pass

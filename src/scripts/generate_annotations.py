@@ -10,7 +10,8 @@ from src.utils.file_utils import get_basename, create_folder, check_name_matchin
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions, get_box_coords_json
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
-from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi
+from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi, extract_features_from_text_region, preprocess_text_region
+from src.utils.feature_extraction import extract_features_from_page, preprocess_page
 from PIL import Image
 import numpy as np
 
@@ -20,7 +21,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests" # "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
+SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\" # "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
+CROP_PATCH_PCTG = 0.02
+
 
 def parse_args():
     """Handle command-line arguments."""
@@ -106,7 +109,9 @@ def main():
             mode="cv2"
             img=load_image(png_img_path, mode=mode, verbose=False)
             bb_list=get_attributes_by_page(json_data, img_id)
-            #iterate on the selected boxes
+
+
+            #iterate on the selected boxes and precompute features
             for box in bb_list:
                 #get coordinates
                 box_coords=get_box_coords_json(box,img_size)
@@ -122,7 +127,16 @@ def main():
                     patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
                     pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                         verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
+                elif box['sub_attribute']=='text':
+                    patch = preprocess_text_region(img, box_coords, mode=mode, verbose=False)
+                    pre_comp = extract_features_from_text_region(patch, mode=mode, 
+                                                        verbose=True)
                 data_dict[img_id].append(pre_comp)
+            
+            #precompute features for the whole page
+            preprocessed_img = preprocess_page(img)
+            pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
+            data_dict[img_id].append(pre_comp) #i add as -1 element, recall when you perform the censoring
 
         #save data_dict as npy file
         save_folder = create_folder(save_path, parents=True, exist_ok=True)

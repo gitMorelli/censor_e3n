@@ -7,6 +7,10 @@ from typing import Tuple, Union, Any
 import zlib
 from pathlib import Path
 from src.utils.logging import FileWriter
+from scipy.fftpack import dct
+
+import pytesseract #for ocr
+pytesseract.pytesseract.tesseract_cmd = r'//vms-e34n-databr/2025-handwriting\programs\tesseract\tesseract.exe'
 
 ModeImage = Union[Image.Image, np.ndarray]
 
@@ -308,6 +312,22 @@ def binarize_patch(patch: ModeImage, threshold: int = 128, mode: str = "cv2", ve
             print(f"binarize_patch: mode=cv2 threshold={threshold} time={( _t1 - _t0 ):0.6f}s")
         return binary
 
+def crop_borders(img, border_pct) :
+    """
+    Crop a fixed percentage from each border.
+    border_pct is fraction of width/height cropped from each side (e.g., 0.04 = 4%).
+    """
+    if border_pct <= 0:
+        return img
+
+    h, w = img.shape[:2]
+    top = int(h * border_pct)
+    bottom = h - top
+    left = int(w * border_pct)
+    right = w - left
+    img = img[top:bottom, left:right]
+
+    return img
 
 ### Feature extraction functions ######################################################################
 ### Functions that assume grayscale images###
@@ -386,6 +406,55 @@ def dct_phash(img, hash_size=8, dct_size=32):
     # Median threshold (exclude the DC term to reduce global luminance bias)
     median = np.median(dct_low[1:, 1:])
     return (dct_low > median).astype(np.uint8)
+
+
+def page_phash(
+    image,
+    hash_size: int = 8,
+    highfreq_factor: int = 4,
+    border_crop_pct: float = 0.0,
+) -> np.ndarray:
+    """
+    Perceptual hash (pHash) using DCT.
+    Returns a boolean array of length hash_size*hash_size.
+
+    border_crop_pct: crops that % from each side before hashing (e.g., 0.04 = 4%).
+    """
+    """
+    Perceptual hash (pHash) using OpenCV DCT.
+    Expects a grayscale numpy array (cv2 image) as input.
+    """
+    img = image.copy()
+
+    # 1. Handle Border Cropping
+    if border_crop_pct > 0:
+        img = crop_borders(img, border_crop_pct)
+
+    # 2. Resize
+    # Note: OpenCV uses (width, height) for size. 
+    # PIL's LANCZOS is roughly equivalent to INTER_AREA or INTER_CUBIC.
+    img_size = hash_size * highfreq_factor
+    img = cv2.resize(img, (img_size, img_size), interpolation=cv2.INTER_AREA)
+
+    # 3. Prepare for DCT (Must be float32 or float64)
+    pixels = img.astype(np.float32)
+
+    # 4. 2D Discrete Cosine Transform
+    # OpenCV's cv2.dct operates on the whole 2D array at once
+    dct_full = cv2.dct(pixels)
+
+    # 5. Extract the low-frequency coefficients (top-left)
+    dct_low = dct_full[:hash_size, :hash_size]
+
+    # 6. Calculate median excluding the DC term (0,0)
+    dct_flat = dct_low.flatten()
+    # We exclude the first element because it represents the average color 
+    # of the image and can skew the hash.
+    med = np.median(dct_flat[1:])
+
+    # 7. Generate bit array
+    return dct_flat > med
+
 def phash_hamming_distance(a_bool, b_bool):
     # a_bool, b_bool are uint8 arrays of 0/1
     return int(np.bitwise_xor(a_bool, b_bool).sum())
@@ -508,7 +577,7 @@ def extract_features_from_blank_roi(patch: ModeImage, mode: str = "cv2",
                               verbose: bool = False,to_compute=['cc','n_black']) -> Any:
     """Extract features from a binary patch. Returns a dict of features."""
     mode = _normalize_mode(mode)
-    if verbose:
+    if verbose: 
         _t0 = perf_counter()
 
     features = {}
@@ -529,6 +598,76 @@ def preprocess_alignment_roi(img: ModeImage, box: Tuple[int, int, int, int], mod
     patch = crop_patch(img, box, mode=mode, verbose=verbose)
     gray_patch = convert_to_grayscale(patch, mode=mode, verbose=verbose)
     return gray_patch
+
+def preprocess_page(img, mode="gray_only",extension='png',crop_mode='none',border_pct=None):
+  # --- Image Preprocessing ---
+    #i assume the image in input is in cv2 format, bgr
+    original_image_bgr = img.copy()
+
+    if crop_mode=='up':
+        h, w, _ = original_image_bgr.shape
+        top_third = original_image_bgr[: h // 3, :, :]
+        original_image_bgr = top_third.copy()
+    elif crop_mode == 'borders':
+        original_image_bgr = crop_borders(original_image_bgr,border_pct)
+
+
+    # 2. Convert to Grayscale
+    gray_image = convert_to_grayscale(original_image_bgr, mode="cv2", verbose=False)
+
+    if mode=="gray_only":
+        return gray_image
+    elif mode=="binarization":
+        # 3. Binarization using Otsu's method
+        # Otsu's binarization automatically finds the optimal threshold value.
+        _, binarized_image = cv2.threshold(gray_image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return binarized_image
+
+    return 
+
+def extract_features_from_page(patch: ModeImage, mode: str = "cv2", 
+                              verbose: bool = False,to_compute=['page_phash'], **kwargs) -> Any:
+    """Extract features from the preprocessed image"""
+    mode = _normalize_mode(mode)
+    if verbose:
+        _t0 = perf_counter()
+
+    features = {}
+    # Example features:
+    if 'page_phash' in to_compute:
+        features['page_phash']=page_phash(patch, hash_size=8, border_crop_pct=kwargs.get('border_crop_pct',0))
+        features['border_crop_pct']=kwargs.get('border_crop_pct',0) #I need to store the parameter to ensure the images to match will be processed in the same way
+    if verbose:
+        _t1 = perf_counter()
+        print(f"extract_features_from_patch: mode={mode} time={( _t1 - _t0 ):0.6f}s")
+
+    return features
+
+def preprocess_text_region(img,box,mode='cv2',verbose=False): #now it is the same as the preprocess alignement region but i can tune it
+    """Crop and convert to grayscale a patch from img given box."""
+    patch = crop_patch(img, box, mode=mode, verbose=verbose)
+    gray_patch = convert_to_grayscale(patch, mode=mode, verbose=verbose)
+
+    return gray_patch
+
+def extract_features_from_text_region(patch: ModeImage, mode: str = "cv2", 
+                            verbose: bool = False) -> Any:
+    if verbose:
+        _t0 = perf_counter()
+
+    features = {}
+    text = pytesseract.image_to_string(patch)
+
+    if verbose:
+        print("Partial image text: ", text)
+
+    features['text'] = text
+
+    if verbose:
+        _t1 = perf_counter()
+        print(f"extract_text_features_from_patch: mode={mode} time={( _t1 - _t0 ):0.6f}s")
+
+    return features
 
 ######### Censoring function #########################################################################
 # get a cv2 image and a set of ROIs, put the pixel black in those regions. SHould work both with polygons and rectangles
