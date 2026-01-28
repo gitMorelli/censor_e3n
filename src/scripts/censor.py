@@ -42,7 +42,7 @@ TEXT_SIMILARITY_METRIC = 'similarity_jaccard_tokens'
 
 #global vars
 mode = 'cv2'
-N_ALIGN_REGIONS=2 #number of align boxes used for template matching
+N_ALIGN_REGIONS=3 #number of align boxes used for template matching
 
 def main():
     args = parse_args()
@@ -172,6 +172,7 @@ def main():
             #print(len(templates_to_consider))
             #perform the check on all the pages to censor or partially censor
             # i perform both the template matching and the phash check
+            
             for t_id in templates_to_consider:
                 img_id=t_id
                 pre_computed = npy_dict[t_id]
@@ -198,7 +199,7 @@ def main():
                     page_dictionary[img_id]['matched_page']=t_id
                     template_dictionary[img_id]['matched_to_this']+=1
             
-            matches_sorted, cost, confident, report = match_pages_phash(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
+            matches_sorted, cost = match_pages_phash(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
                                   gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
             page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
 
@@ -209,13 +210,11 @@ def main():
                     #only phash_failed)
                     problematic_pages_step_1.append(t_id)
                     test_log[t_id]['failed_test_1'] = True
-                    if page_dictionary[t_id]['match_phash']!=t_id:
-                        test_log[p]['phash_1']=page_dictionary[t_id]['match_phash']
-                    if page_dictionary[t_id]['matched_page']!=t_id:
-                        test_log[p]['template_1']=page_dictionary[t_id]['matched_page']
                 else: 
                     correct_pages_step_1.append(t_id)
                     template_dictionary[t_id]['final_match']=t_id
+                test_log[t_id]['phash_1']=page_dictionary[t_id]['match_phash']
+                test_log[t_id]['template_1']=page_dictionary[t_id]['matched_page']
 
             if len(problematic_pages_step_1)>0:
                 for img_id in pages_in_annotation: # i need to load all pages in memory if the first test failed 
@@ -269,7 +268,7 @@ def main():
                 pages_step_3 = pages_step_2[:]
                 if len(matched_templates_step_2)>0:
                     #i perform phash matching to check the matched templates
-                    matches_sorted, cost, confident, report = match_pages_phash(page_dictionary,template_dictionary, pages_step_2, matched_templates_step_2, 
+                    matches_sorted, cost = match_pages_phash(page_dictionary,template_dictionary, pages_step_2, matched_templates_step_2, 
                                     gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
                     #page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
                     for match in matches_sorted:
@@ -297,11 +296,12 @@ def main():
 
                         for ii,img_id in enumerate(pages_step_3):
                             if page_dictionary[img_id]['text']==None:
-                                patch = preprocess_text_region(img, text_box, mode=mode, verbose=False)
+                                patch = preprocess_text_region(page_dictionary[img_id]['img'], text_box, mode=mode, verbose=False)
                                 page_text = extract_features_from_text_region(patch, mode=mode, verbose=False, psm=psm)['text']
                             else:
                                 page_text = page_dictionary[img_id]['text']
                             similarity[ii,jj] = compare_pages_same_section(page_text, pre_computed_text)[TEXT_SIMILARITY_METRIC]
+                    #print(similarity)
 
                     matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
                     for match in matches_sorted:
@@ -319,9 +319,11 @@ def main():
                 #warning_map[j][i][img_id]['actual_position']=page_dictionary[img_id]['matched_page']
                 #warning_map[j][i][img_id]['was_moved'] = (page_dictionary[img_id]['matched_page'] == img_id)
                 print(f"template {t_id} is matched to page {template_dictionary[t_id]['final_match']}, and log is {test_log[t_id]}")
-                #if the test is passed they are orthered correctly -> i match with corresponding index 
+            print("\n \n","--"*50)
+
+            #if the test is passed they are orthered correctly -> i match with corresponding index 
             
-            return 0
+            continue
             #at this stage I have ordered the pages in the best possible way and identified the documents for which 
             # i had to re shuffle and for which i am not sure of the re-ordering
             for img_id in pages_in_annotation:

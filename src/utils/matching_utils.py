@@ -53,11 +53,11 @@ def match_pages_phash(page_dict, template_dict, pages_list, templates_to_conside
             "hamming": int(cost[i, j]),
         })
     
-    confident,report = assignment_confidence_phash(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
+    #confident,report = assignment_confidence_phash(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
 
     matches_sorted = sorted(matches, key=lambda x: x["page_index"])
 
-    return matches_sorted, cost, confident, report
+    return matches_sorted, cost #, confident, report
 
 def update_phash_matches(matches_sorted,page_dict):
     for match in matches_sorted:
