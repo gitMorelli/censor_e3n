@@ -79,7 +79,8 @@ def assignment_confidence_phash(cost: np.ndarray, assignment, gap_threshold: int
       - matched distance <= max_dist
     """
     n = cost.shape[0]
-    row_to_col = {r: c for r, c in assignment}
+    row_ind, col_ind = assignment
+    row_to_col = {r: c for r, c in zip(row_ind, col_ind)}
 
     per_row = []
     confident = True
@@ -108,7 +109,7 @@ def assignment_confidence_phash(cost: np.ndarray, assignment, gap_threshold: int
             "ok": row_ok
         })
 
-    total = int(sum(cost[r, c] for r, c in assignment))
+    total = int(sum(cost[r, c] for r, c in zip(row_ind, col_ind)))
     avg = float(total) / float(n)
 
     report = {

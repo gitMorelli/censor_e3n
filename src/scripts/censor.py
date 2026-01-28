@@ -169,39 +169,22 @@ def main():
                     templates_to_consider.append(img_id)
                 else:
                     page_dictionary[img_id]['img']=None
-            
-            '''no_censor_mask = [d.get('type') == 'N' for d in page_dictionary] #mask to index on the pages that we don't need to censor
-            p_censor_mask = [d.get('type') == 'P' for d in page_dictionary] #mask to index on the pages that we can censor fast
-            censor_mask = [d.get('type') == 'C' for d in page_dictionary] #mask to index on the pages that we need to censor'''
-
-            '''
-            #open extra pages if you don't have enough
-            N_to_censor = len(p_censor_mask)+len(censor_mask) 
-            to_add = MIN_TO_CHECK_TEMPLATE - N_to_censor
-            for d in page_dictionary[no_censor_mask]:
-                img_id=d['img_id']
-                if to_add>0:
-                    img=load_image(d['img_path'], mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
-                    page_dictionary[img_id]['img']=img.copy()
-                    to_add-=1
-                else:
-                    break
-            '''
-            
+            #print(len(templates_to_consider))
             #perform the check on all the pages to censor or partially censor
             # i perform both the template matching and the phash check
             for t_id in templates_to_consider:
-                img_id=t_id.copy()
+                img_id=t_id
                 pre_computed = npy_dict[t_id]
                 align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,t_id) 
                 template_dictionary[t_id]['align_boxes']=align_boxes
                 template_dictionary[t_id]['pre_computed_align']=pre_computed_align
                 template_dictionary[t_id]['page_phash']=pre_computed[-1]['page_phash']
+                template_dictionary[t_id]['border_crop_pct']=pre_computed[-1]['border_crop_pct']
 
                 preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
                 CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
                 pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
-                page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
+                page_dictionary[img_id]['page_phash']=pre_comp['page_phash'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
 
                 shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
                                      pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING) #recall this functions returns a shift for each good match
@@ -234,7 +217,6 @@ def main():
                     correct_pages_step_1.append(t_id)
                     template_dictionary[t_id]['final_match']=t_id
 
-            
             if len(problematic_pages_step_1)>0:
                 for img_id in pages_in_annotation: # i need to load all pages in memory if the first test failed 
                     #the pre computed values are all loaded since i need only C and P template's regions 
@@ -246,7 +228,6 @@ def main():
                     
                     if page['page_phash'] is None:
                         preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
-                        CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
                         pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
                         page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
                 
@@ -281,42 +262,46 @@ def main():
                             template_dictionary[t_id]['matched_to_this']+=1
                             test_log[t_id]['template_2'].append(img_id)
 
-                problematic_templates_step_2 = [p for p in problematic_pages_step_1 if page_dictionary[p]['matched_to_this']!=1] #all templates that are matched to more than one are problematic
-                matched_templates_step_2 = [p for p in problematic_pages_step_1 if page_dictionary[p]['matched_to_this']==1] 
+                problematic_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']!=1] #all templates that are matched to more than one 
+                #are problematic, also the ones that ar enot matched
+                matched_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']==1] 
 
-                #i perform phash matching to check the matched templates
-                matches_sorted, cost, confident, report = match_pages_phash(page_dictionary,template_dictionary, pages_step_2, matched_templates_step_2, 
-                                  gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
-                #page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
                 pages_step_3 = pages_step_2[:]
-                for match in matches_sorted:
-                    img_id = match["page_index"] 
-                    t_id = match["template_index"]
-                    test_log[t_id]['phash_2'] = img_id
-                    if page_dictionary[img_id]['matched_page']!=t_id:
-                        problematic_templates_step_2.append(t_id)
-                    else:
-                        template_dictionary[t_id]['final_match']=img_id
-                        #if a page was matched i can remove from the list of pages to pass to step_3
-                        pages_step_3.remove(img_id)
+                if len(matched_templates_step_2)>0:
+                    #i perform phash matching to check the matched templates
+                    matches_sorted, cost, confident, report = match_pages_phash(page_dictionary,template_dictionary, pages_step_2, matched_templates_step_2, 
+                                    gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
+                    #page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+                    for match in matches_sorted:
+                        img_id = match["page_index"] 
+                        t_id = match["template_index"]
+                        test_log[t_id]['phash_2'] = img_id
+                        if page_dictionary[img_id]['matched_page']!=t_id:
+                            problematic_templates_step_2.append(t_id)
+                        else:
+                            template_dictionary[t_id]['final_match']=img_id
+                            #if a page was matched i can remove from the list of pages to pass to step_3
+                            pages_step_3.remove(img_id)
 
                 # if there are problematic pages i need to process further; If only one is left out i check it regardless
                 # I test with the strongest approach (OCR)
                 if len(problematic_templates_step_2)>0: 
                     similarity = np.zeros((len(pages_step_3), len(problematic_templates_step_2)))
                     #i need to iterate on all the remaining temlates and on all the remaining pages that are not the final match of a template
-                    for j,t_id in enumerate(problematic_templates_step_2):
+                    for jj,t_id in enumerate(problematic_templates_step_2):
                         test_log[t_id]['failed_test_2']=True # I update the log
+                        pre_computed = npy_dict[t_id]
                         text_boxes, pre_computed_texts = get_text_boxes(root,pre_computed,t_id) #i know that i have a single text_box ->
                         text_box, pre_computed_text = text_boxes[0], pre_computed_texts[0]['text']
+                        psm = pre_computed_texts[0]['psm']
 
-                        for i,img_id in enumerate(pages_step_3):
+                        for ii,img_id in enumerate(pages_step_3):
                             if page_dictionary[img_id]['text']==None:
                                 patch = preprocess_text_region(img, text_box, mode=mode, verbose=False)
-                                page_text = extract_features_from_text_region(patch, mode=mode, verbose=True)['text']
+                                page_text = extract_features_from_text_region(patch, mode=mode, verbose=False, psm=psm)['text']
                             else:
                                 page_text = page_dictionary[img_id]['text']
-                            similarity[i,j] = compare_pages_same_section(page_text, pre_computed_text)[TEXT_SIMILARITY_METRIC]
+                            similarity[ii,jj] = compare_pages_same_section(page_text, pre_computed_text)[TEXT_SIMILARITY_METRIC]
 
                     matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
                     for match in matches_sorted:
@@ -333,7 +318,7 @@ def main():
             for t_id in templates_to_consider:
                 #warning_map[j][i][img_id]['actual_position']=page_dictionary[img_id]['matched_page']
                 #warning_map[j][i][img_id]['was_moved'] = (page_dictionary[img_id]['matched_page'] == img_id)
-                print(f"template {img_id} is matched to page {template_dictionary[t_id]['final_match']}, and log is {test_log[t_id]}")
+                print(f"template {t_id} is matched to page {template_dictionary[t_id]['final_match']}, and log is {test_log[t_id]}")
                 #if the test is passed they are orthered correctly -> i match with corresponding index 
             
             return 0
