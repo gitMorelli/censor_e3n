@@ -3,29 +3,19 @@ import numpy as np
 from scipy.fftpack import dct
 from scipy.optimize import linear_sum_assignment
 
-'''cost_matrix, matches = match_pages(folder, folder_2, border_crop_pct=crop_pct)
-assignment = hungarian_min_cost(cost_matrix)
 
-confident, report = assignment_confidence_phash(
-    cost_matrix, assignment, gap_threshold=5, max_dist=18
-)
-
-print(f"Border crop: {crop_pct*100:.1f}% each side")
-print("\n=== pHash cost matrix (Hamming distances) ===")
-print(cost_matrix)
-print("\n=== pHash assignment (Hungarian) ===")
-print("\nMatches (A -> B):")
-for m in matches:
-    print(f"A[{m['A_index']}] {m['A_file']}  ->  B[{m['B_index']}] {m['B_file']}   (dist={m['hamming']})")
-
-print("\n=== pHash confidence report ===")
-print(f"Total cost: {report['total_cost']}, Avg: {report['avg_cost']:.2f}")
-for r in report["per_row"]:
-    print(f"Row A[{r['row']}]: best={r['best']} second={r['second']} gap={r['gap']} chosen={r['chosen']} ok={r['ok']}")
-print(f"\nOverall confident: {confident}")'''
+def check_matching_correspondence(page_dict, pages_list):
+    non_corresponding_subset=[]
+    for img_id in pages_list:
+        if page_dict[img_id]['match_phash']!=page_dict[img_id]['matched_page']:
+            non_corresponding_subset.append(img_id)
+    return non_corresponding_subset
 
 
-def match_pages_phash(page_dict, template_dict, pages_list, templates_to_consider, border_crop_pct: float = 0.0):
+def hamming_distance(hash1: np.ndarray, hash2: np.ndarray) -> int:
+    return int(np.count_nonzero(hash1 ^ hash2))
+
+def match_pages_phash(page_dict, template_dict, pages_list, templates_to_consider, gap_threshold=5, max_dist=18):
     #assume phash are already computed
 
     hashes_pages = []
@@ -38,47 +28,39 @@ def match_pages_phash(page_dict, template_dict, pages_list, templates_to_conside
         hashes_templates.append(template_dict[t_id]['page_phash'])
 
     # Cost matrix: Hamming distances
-    cost = np.zeros((len(paths_a), len(paths_b)), dtype=np.int32)
-    for i in range(len(paths_a)):
-        for j in range(len(paths_b)):
-            cost[i, j] = hamming_distance(hashes_a[i], hashes_b[j])
+    cost = np.zeros((len(hashes_pages), len(hashes_templates)), dtype=np.int32)
+    for i in range(len(hashes_pages)):
+        for j in range(len(hashes_templates)):
+            cost[i, j] = hamming_distance(hashes_pages[i], hashes_templates[j])
 
     # Hungarian assignment (minimize total cost)
-    row_ind, col_ind = linear_sum_assignment(cost)
+    assignement = linear_sum_assignment(cost)
+    row_ind, col_ind = assignement
 
     matches = []
     for i, j in zip(row_ind, col_ind):
         matches.append({
-            "A_index": i,
-            "A_file": os.path.basename(paths_a[i]),
-            "B_index": j,
-            "B_file": os.path.basename(paths_b[j]),
+            "page_index": pages_list[i],
+            "template_index": templates_to_consider[j],
             "hamming": int(cost[i, j]),
         })
+    
+    confident,report = assignment_confidence_phash(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
 
-    matches_sorted = sorted(matches, key=lambda x: x["A_index"])
-    return cost, matches_sorted
+    matches_sorted = sorted(matches, key=lambda x: x["page_index"])
+
+    return matches_sorted, cost, confident, report
+
+def update_phash_matches(matches_sorted,page_dict):
+    for match in matches_sorted:
+        img_id = match['page_index']
+        page_dict[img_id]['match_phash']=match['template_index']
+    return page_dict
 
 
 def hungarian_min_cost(cost: np.ndarray):
     r, c = linear_sum_assignment(cost)
     return list(zip(r.tolist(), c.tolist()))
-
-
-def phash_cost_matrix(pathsA, pathsB, border_crop_pct: float):
-    hashesA, hashesB = [], []
-    for p in pathsA:
-        with Image.open(p) as im:
-            hashesA.append(phash(im, border_crop_pct=border_crop_pct))
-    for p in pathsB:
-        with Image.open(p) as im:
-            hashesB.append(phash(im, border_crop_pct=border_crop_pct))
-
-    cost = np.zeros((len(pathsA), len(pathsB)), dtype=np.int32)
-    for i in range(len(pathsA)):
-        for j in range(len(pathsB)):
-            cost[i, j] = hamming_distance(hashesA[i], hashesB[j])
-    return cost
 
 
 def assignment_confidence_phash(cost: np.ndarray, assignment, gap_threshold: int, max_dist: int):

@@ -18,6 +18,7 @@ from src.utils.feature_extraction import extract_features_from_page, preprocess_
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
 from src.utils.logging import FileWriter
+from src.utils.matching_utils import update_phash_matches, match_pages_phash, check_matching_correspondence
 from PIL import Image
 import numpy as np 
 
@@ -34,6 +35,9 @@ SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests
 MIN_TO_CHECK_TEMPLATE = 4
 THRESHOLD_MATCHING = 0.7
 SCALE_FACTOR_MATCHING = 2 
+
+GAP_THRESHOLD_PHASH = 5
+MAX_DIST_PHASH = 18
 
 #global vars
 mode = 'cv2'
@@ -141,6 +145,7 @@ def main():
                 #for the page (will be overwritten each time i compare with diff template)
                 page_dictionary[img_id]['matched_page']=None #initially I assume the page is matched to the same index template
                 page_dictionary[img_id]['page_phash']=None
+                page_dictionary[img_id]['match_phash']=None
 
                 censor_type=get_censor_type(root,img_id) 
                 template_dictionary[img_id]['type']=censor_type
@@ -196,13 +201,32 @@ def main():
                     page_dictionary[img_id]['matched_page']=t_id
                     template_dictionary[img_id]['matched_to_this']+=1
                 
+            correct_pages_step_1 = [p for p in templates_to_consider if page_dictionary[p]['template_matches']==1]
+            incorrect_pages_step_1 = [p for p in templates_to_consider if page_dictionary[p]['template_matches']!=1]
+
+            templates_to_consider_second_step = incorrect_pages_step_1[:]
+            first_check_ok = True
+            if len(incorrect_pages_step_1)>0:
+                #i perform phash matching on the incorrectly ordered pages
+                #i consider all the templates so that if phash gives the same result I am sure it is not by chance
+                #i need to extrqct the phqsh fro, the incorrect pages
+                for img_id in incorrect_pages_step_1:
+                    page=page_dictionary[img_id]
+                    preprocessed_img = preprocess_page(page['img'])
+                    CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
+                    pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
+                    page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
+
+                matches_sorted, cost, confident, report = match_pages_phash(page_dictionary,template_dictionary, incorrect_pages_step_1, templates_to_consider, 
+                                  gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
+                page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+
+                for img_id in incorrect_pages_step_1:
+                    if page_dictionary[img_id]['match_phash'] != img_id:
+                        first_check_ok = False
+
             
-            correct_pages_step_1 = [p for p in pages_in_annotation if page_dictionary[p]['template_matches']==1]
-            failed_first_ordering_test=False
-            if len(correct_pages_step_1)<len(templates_to_consider):
-                failed_first_ordering_test=True
-            
-            if failed_first_ordering_test:
+            if not first_check_ok:
                 for img_id in pages_in_annotation: # i need to load all pages in memory if the first test failed 
                     #the pre computed values are all loaded since i need only C and P template's regions 
                     page = page_dictionary[img_id]
@@ -211,20 +235,19 @@ def main():
                         img=load_image(page['img_path'], mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
                         page_dictionary[img_id]['img']=img.copy()
                     
-                    preprocessed_img = preprocess_page(page['img'])
-                    CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
-                    pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
-                    page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
+                    if page['page_phash'] is None:
+                        preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
+                        CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
+                        pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
+                        page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
                 
                 for img_id in pages_in_annotation:
                     if img_id in correct_pages_step_1:
                         continue
                     page = page_dictionary[img_id]
 
-                    for t_id in templates_to_consider:
-                        if t_id==img_id: #skip these that are already checked (i have already checked each with itself)
-                            continue
-                        if img_id in correct_pages_step_1: #skip templates that were already matched in first step
+                    for t_id in templates_to_consider_second_step:
+                        if t_id==img_id: #skip the pairs that were checked (i have already checked each with itself)
                             continue
                         
                         #print(t_id,img_id)
@@ -245,11 +268,18 @@ def main():
                             template_dictionary[t_id]['matched_to_this']+=1
 
                 problematic_pages = [p for p in pages_in_annotation if page_dictionary[p]['template_matches']!=1]
-                problematic_templates = [p for p in templates_to_consider if template_dictionary[p]['matched_to_this']!=1]
+                problematic_templates = [p for p in templates_to_consider_second_step if template_dictionary[p]['matched_to_this']!=1]
 
                 #i perform phash matching
+                matches_sorted, cost, confident, report = match_pages_phash(page_dictionary,template_dictionary, pages_in_annotation, templates_to_consider, 
+                                  gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
+                page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
 
-                if len(problematic_pages)>1 or len(problematic_templates)>1: # if there are problematic pages i need to process further; If only one is left out i check it regardless
+                condition_on_template = len(problematic_pages)>1 or len(problematic_templates)>1
+                non_corresponding_subset = check_matching_correspondence(page_dictionary,pages_in_annotation)
+                condition_on_correspondence = len(non_corresponding_subset)>0
+
+                if condition_on_template or condition_on_correspondence: # if there are problematic pages i need to process further; If only one is left out i check it regardless
                     #add the code to match the pages with hashmap and check with ocr
                     #print(f"n prob pages = {len(problematic_pages)}")
                     pass
