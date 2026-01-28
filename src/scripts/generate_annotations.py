@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\" # "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
 CROP_PATCH_PCTG = 0.02
+OCR_PSM=6
 
 
 def parse_args():
@@ -130,7 +131,7 @@ def main():
                 elif box['sub_attribute']=='text':
                     patch = preprocess_text_region(img, box_coords, mode=mode, verbose=False)
                     pre_comp = extract_features_from_text_region(patch, mode=mode, 
-                                                        verbose=True)
+                                                        verbose=True,psm=OCR_PSM)
                 data_dict[img_id].append(pre_comp)
             
             #precompute features for the whole page

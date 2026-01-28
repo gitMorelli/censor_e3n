@@ -651,17 +651,20 @@ def preprocess_text_region(img,box,mode='cv2',verbose=False): #now it is the sam
     return gray_patch
 
 def extract_features_from_text_region(patch: ModeImage, mode: str = "cv2", 
-                            verbose: bool = False) -> Any:
+                            verbose: bool = False, lang: str = "fra", psm: int = 6) -> Any:
+    '''psm=6 assumes a uniform block of text; other useful values: 3, 4, 7, 11.'''
     if verbose:
         _t0 = perf_counter()
 
     features = {}
-    text = pytesseract.image_to_string(patch)
+    config = f"--oem 3 --psm {psm}"
+    text = pytesseract.image_to_string(patch, lang=lang, config=config)
 
     if verbose:
         print("Partial image text: ", text)
 
     features['text'] = text
+    features['psm'] = psm
 
     if verbose:
         _t1 = perf_counter()
