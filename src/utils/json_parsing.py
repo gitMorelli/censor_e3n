@@ -147,3 +147,21 @@ attributes_page_3 = get_attributes_by_page(data, 3) # Assumendo che 'data' sia d
 print(f"Trovate {len(attributes_page_3)} regioni nella pagina 3:")
 for attr in attributes_page_3:
     print(attr)'''
+
+
+def get_align_boxes(root,pre_computed,img_id):
+    ''' given a root file for the questionnairre of interest it returns the list of the 
+    bb regions thqt hqve roi qttribute qnd qlign sub qttribute'''
+    roi_boxes = []
+    pre_computed_rois = []
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
+    i=0
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['sub_attribute'] == "align":
+            roi_boxes.append(box_coords)
+            pre_computed_rois.append(pre_computed[i])
+        i+=1
+    return roi_boxes, pre_computed_rois
