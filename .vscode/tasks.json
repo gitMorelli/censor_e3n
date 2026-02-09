@@ -35,6 +35,21 @@
     },
     {
       //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: convert_additional_templates (LocalEnv)",
+      "type": "process",
+      "command": "//vms-e34n-databr//2025-handwriting:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
       "label": "Python Debugger: generate_annotations (LocalEnv)",
       "type": "process",
       "command": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",

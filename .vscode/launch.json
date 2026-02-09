@@ -41,6 +41,22 @@
             ]
         },
         {
+            "name": "Python Debugger: convert_additional_templates (LocalEnv)",
+            "type": "debugpy",
+            "request": "launch",
+            //"program": "${workspaceFolder}/src/scripts/png_from_pdf.py",
+            "python": "//vms-e34n-databr//2025-handwriting/programs/miniconda3//envs/LocalEnv/python.exe",
+            "module": "src.scripts.convert_additional_templates",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "QT_QPA_PLATFORM_PLUGIN_PATH":"//vms-e34n-databr//2025-handwriting\\programs\\miniconda3\\envs\\LocalEnv\\Library\\lib\\qt6\\plugins\\platforms"
+            },
+            "args": [
+                "--verbose",
+            ]
+        },
+        {
             "name": "Python Debugger: generate_annotations",
             "type": "debugpy",
             "request": "launch",

@@ -3,13 +3,15 @@ from typing import List, Union
 from PIL import Image
 import os
 import shutil
+import json
+import numpy as np
 
 def list_files_with_extension(
     folder: Union[str, Path],
     extension: Union[str, List[str], None] = None,
     recursive: bool = False,
 ) -> List[Path]:
-    """
+    """ 
     Return file paths in `folder` that match `extension`.
 
     Args:
@@ -185,3 +187,58 @@ def remove_folder(folder_path):
             print(f"Error removing folder: {e}")
     else:
         print("Folder does not exist.")
+
+def load_annotation_tree(logger,annotation_path):
+    ''' this function takes the annotation path and returns the list of the annotation file paths and the list of their root names
+    the files are sorted alphabetically (because the function "list_files_with_extension" does it)
+    '''
+    annotation_files = list_files_with_extension(annotation_path, "json", recursive=False)
+    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
+    if not annotation_files:
+        logger.warning("No annotation files found. Exiting.")
+        return 0
+
+    print(annotation_path)
+    annotation_file_names = [get_basename(annotation_file, remove_extension=True) for annotation_file in annotation_files]
+
+    return annotation_file_names, annotation_files
+
+def load_subjects_tree(logger, filled_path):
+    ''' this function takes the path that collects all pngs to process and returns the list of the paths of the subfolders
+    and of their base names (I expect the filled path to have N folders inside each containing the data of a different subject)
+    the folder names are sorted alphabetically (because the function "list_files_with_extension" does it)
+
+    The function also initialize the warning_map in which i save warning messages for the processed files for each subject, questionnaire and page
+    '''
+    filled_folders = list_subfolders(filled_path, recursive=False)
+    filled_folder_names = [get_basename(p, remove_extension=False) for p in filled_folders]
+    logger.debug("Filled folder names: %s", len(filled_folder_names))
+    warning_map=[[] for _ in range(len(filled_folders))]
+    return warning_map, filled_folder_names, filled_folders
+
+#i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
+def load_template_info(logger,annotation_files,annotation_file_names,annotation_path):
+    annotation_roots=[]
+    path_npy=os.path.join(annotation_path,"precomputed_features")
+    npy_files=list_files_with_extension(path_npy, "npy", recursive=False)
+    npy_file_names = [get_basename(npy_file, remove_extension=True) for npy_file in npy_files]
+
+    # I match them with the annotation file names (will be a more complex function, in this test the names are the same)
+    #check that names match
+    if check_name_matching(annotation_file_names, npy_file_names, logger) == 1:
+        logger.error(f"Mismatch between annotation files and numpy files . Exiting.")
+        return 1
+    #check that they are sorted in the same way
+    assert annotation_file_names == npy_file_names, "Annotation files and numpy files are not in the same order."
+
+    #i load the data i will use (xml first)
+    for i, annotation_file in enumerate(annotation_files):
+        #_ ,root = load_xml(annotation_file)
+        with open(annotation_file, 'r') as f: root = json.load(f)
+        annotation_roots.append(root)
+    #then numpy arrays
+    npy_data=[]
+    for i, npy_file in enumerate(npy_files):
+        data_dict = np.load(npy_file, allow_pickle=True).item()
+        npy_data.append(data_dict)
+    return annotation_roots, npy_data

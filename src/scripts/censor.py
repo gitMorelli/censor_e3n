@@ -5,22 +5,32 @@ import os
 import shutil
 import json
 
+from PIL import Image
+import numpy as np 
 import cv2
+
 #from src.utils.convert_utils import pdf_to_png_images
-from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number
-from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder
+from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number, load_template_info
+from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder, load_annotation_tree, load_subjects_tree
+
 #from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
+
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
+from src.utils.json_parsing import get_align_boxes
+
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
 from src.utils.feature_extraction import extract_features_from_page, preprocess_page, extract_features_from_text_region, preprocess_text_region
+
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
-from src.utils.logging import FileWriter
-from src.utils.matching_utils import update_phash_matches, match_pages_phash, check_matching_correspondence, compare_pages_same_section, match_pages_text
-from PIL import Image
-import numpy as np 
+
+from src.utils.logging import FileWriter, initialize_logger
+
+from src.utils.matching_utils import update_phash_matches, match_pages_phash, check_matching_correspondence, pre_load_images_to_censor, pre_load_image_properties
+from src.utils.matching_utils import compare_pages_same_section, match_pages_text, initialize_sorting_dictionaries, pre_load_selected_templates, perform_template_matching
+from src.utils.matching_utils import perform_phash_matching
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests" #"Z:\\vscode\\censor_e3n\\data\\q5_tests" # "C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests"
+#SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests" #"Z:\\vscode\\censor_e3n\\data\\q5_tests" # "C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests"
 SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests_ordering"
 
 # thresholds
@@ -46,12 +56,8 @@ N_ALIGN_REGIONS=3 #number of align boxes used for template matching
 
 def main():
     args = parse_args()
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-        logging.getLogger().setLevel(logging.DEBUG)
-    else:
-        logging.disable(logging.CRITICAL)
 
+    # initialize the variables 
     skip_checking_1 = args.skip_checking_1
     skip_checking_2 = args.skip_checking_2
     skip_aligning = args.skip_aligning
@@ -62,35 +68,33 @@ def main():
     save_debug_images = args.save_debug_images
     save_debug_times = args.save_debug_times
 
-    #remove files and folders to generate
+    #Initialize folders: remove files and folders to generate, add time_logs folder if needed
     remove_folder(save_path)
     if save_debug_images : remove_folder(os.path.join(SOURCE,'debug'))
     if save_debug_times : remove_folder(os.path.join(SOURCE,'time_logs'))
+    log_path=os.path.join(SOURCE,'time_logs')
+    create_folder(log_path, parents=True, exist_ok=True)
 
+    #initialize error logger and global time logger
+    initialize_logger(args.verbose,logger)
+    global_time_logger=FileWriter(save_debug_times,
+                                    os.path.join(log_path,f"global_time_logger.txt"))
+
+    #check for mistakes in the filenames (you can trasform in a single logging function)
     logger.debug("Output folder: %s", save_path)
     logger.debug("Annotation folder: %s", annotation_path)
     logger.debug("Filled folder: %s", filled_path)
     logger.debug("Skip checking %s, Skip aligning %s",skip_checking_1,skip_checking_2,skip_aligning)
 
-    annotation_files = list_files_with_extension(annotation_path, "json", recursive=False)
-    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
-    if not annotation_files:
-        logger.warning("No annotation files found. Exiting.")
-        return 0
+    #load the annotation files (full paths and names)
+    annotation_file_names, annotation_files = load_annotation_tree(logger, annotation_path)
+    # I open the json and save them in a list (ordered as annotation_files), i also open the pre_computed data from the npy files
+    annotation_roots, npy_data = load_template_info(logger,annotation_files,annotation_file_names,annotation_path)
+    # M: add a function that stores these objects in a dictionary that has the questionnnaire id as key (eg Q_5, Q_6, ..)
+    # ---> HERE
 
-    print(annotation_path)
-    annotation_file_names = [get_basename(annotation_file, remove_extension=True) for annotation_file in annotation_files]
-    filled_folders = list_subfolders(filled_path, recursive=False)
-    filled_folder_names = [get_basename(p, remove_extension=False) for p in filled_folders]
-    logger.debug("Filled folder names: %s", len(filled_folder_names))
-
-    annotation_roots, npy_data = load_template_info(annotation_files,annotation_file_names,annotation_path)
-
-    log_path=os.path.join(SOURCE,'time_logs')
-    create_folder(log_path, parents=True, exist_ok=True)
-    global_time_logger=FileWriter(save_debug_times,
-                                    os.path.join(log_path,f"global_time_logger.txt"))
-    warning_map=[[] for _ in range(len(filled_folders))]
+    # load subjects tree
+    warning_map, filled_folder_names, filled_folders = load_subjects_tree(logger, filled_path)
 
     # i iterate on the filled_folders (study subjects)
     for j, filled_folder in enumerate(filled_folders): #subject level
@@ -119,90 +123,36 @@ def main():
 
             #load the json file
             root = annotation_roots[i]
-            pages_in_annotation = get_page_list(root)
             npy_dict = npy_data[i]
-            page_dictionary = {}
-            template_dictionary = {}
+            pages_in_annotation = get_page_list(root)
+
+            # load dictionary to store warning messages on pages
             test_log = {'doc_level_warning':None}
             for p in pages_in_annotation:
-                page_dictionary[p]={}
-                template_dictionary[p]={}
                 test_log[p]={'failed_test_1': False, 'phash_1': None, 'template_1': None,
                              'failed_test_2': False, 'phash_2': None, 'template_2': [], 
                              'OCR_WARNING': None, 'OCR': None,
                              'alignement_1': None, 'increased_censoring': None}
-
-            #iterate on the pages in a document and initialize their parameters
-            templates_to_consider=[]
-            for img_id in pages_in_annotation:
-                warning_map[j][i]={}
-
-                page_dictionary[img_id]['img_id']=img_id
-                img_name=f'page_{img_id}.png'
-                page_dictionary[img_id]['img_name']=img_name 
-                png_img_path = find_corresponding_file(sorted_files, img_name)
-                page_dictionary[img_id]['img_path']=png_img_path
-                page_dictionary[img_id]['img_size']=get_page_dimensions(root,img_id)
-                page_dictionary[img_id]['template_matches']=0 #how many time this page was matched with a template
-                page_dictionary[img_id]['shifts']=None #(shift_x,shift_y) for first qnd second region
-                page_dictionary[img_id]['centers']=None #(shift_x,shift_y) for first qnd second region
-                page_dictionary[img_id]['stored_template']=None # to store the features extracted from the align regions 
-                #for the page (will be overwritten each time i compare with diff template)
-                page_dictionary[img_id]['matched_page']=None #initially I assume the page is matched to the same index template
-                page_dictionary[img_id]['page_phash']=None
-                page_dictionary[img_id]['match_phash']=None
-                page_dictionary[img_id]['text']=None
-
-                censor_type=get_censor_type(root,img_id) 
-                template_dictionary[img_id]['type']=censor_type
-                template_dictionary[img_id]['align_boxes']=None #the coordinates of the align boxes for a template
-                template_dictionary[img_id]['pre_computed_align']=None #the pre computed values for the align region in the template
-                template_dictionary[img_id]['matched_to_this']=0
-                template_dictionary[img_id]['page_phash']=None
-                template_dictionary[img_id]['final_match']=None
-                #template_dictionary[img_id]['text']=None
-                
-                #i load in memory only the pages that needs censoring or partial censoring at the beginning
-                if censor_type!='N':
-                    img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
-                    page_dictionary[img_id]['img']=img.copy()
-                    templates_to_consider.append(img_id)
-                else:
-                    page_dictionary[img_id]['img']=None
-            #print(len(templates_to_consider))
-            #perform the check on all the pages to censor or partially censor
-            # i perform both the template matching and the phash check
             
-            for t_id in templates_to_consider:
-                img_id=t_id
-                pre_computed = npy_dict[t_id]
-                align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,t_id) 
-                template_dictionary[t_id]['align_boxes']=align_boxes
-                template_dictionary[t_id]['pre_computed_align']=pre_computed_align
-                template_dictionary[t_id]['page_phash']=pre_computed[-1]['page_phash']
-                template_dictionary[t_id]['border_crop_pct']=pre_computed[-1]['border_crop_pct']
+            #initialize the dictionaries i will use to store info on the sorting process
+            page_dictionary,template_dictionary = initialize_sorting_dictionaries(sorted_files, root,mode=mode)
+            #pre load the images to be processed (according to the templates that we want to censor)
+            page_dictionary,template_dictionary, templates_to_consider = pre_load_images_to_censor(template_dictionary, page_dictionary, mode=mode)
 
-                preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
-                CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
-                pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
-                page_dictionary[img_id]['page_phash']=pre_comp['page_phash'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
-
-                shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
-                                     pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING) #recall this functions returns a shift for each good match
-                #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
-                
-                if len(shifts)==N_ALIGN_REGIONS:
-                    page_dictionary[img_id]['shifts'] = shifts
-                    page_dictionary[img_id]['centers'] = centers 
-                    page_dictionary[img_id]['template_matches']=1
-                    page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
-                    page_dictionary[img_id]['matched_page']=t_id
-                    template_dictionary[img_id]['matched_to_this']+=1
+            #pre_load_template_info
+            template_dictionary = pre_load_selected_templates(templates_to_consider,npy_dict, root, template_dictionary)
+            #pre_load phash for images
+            page_dictionary = pre_load_image_properties(templates_to_consider,page_dictionary,template_dictionary,properties=['phash'],mode=mode)
             
-            matches_sorted, cost = match_pages_phash(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
-                                  gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
-            page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+            #perform template_matching and update the matching keys in the dictionaries
+            page_dictionary,template_dictionary = perform_template_matching(templates_to_consider,page_dictionary,template_dictionary, 
+                                      n_align_regions=N_ALIGN_REGIONS,scale_factor=SCALE_FACTOR_MATCHING)
+                
+            #perform phash matching
+            page_dictionary = perform_phash_matching(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
+                            gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH)
 
+            #check for which pages at least one test failed (page not matched to expected template for phash or template_matching)
             problematic_pages_step_1 = []
             correct_pages_step_1 = []
             for t_id in templates_to_consider:
@@ -217,19 +167,11 @@ def main():
                 test_log[t_id]['template_1']=page_dictionary[t_id]['matched_page']
 
             if len(problematic_pages_step_1)>0:
-                for img_id in pages_in_annotation: # i need to load all pages in memory if the first test failed 
-                    #the pre computed values are all loaded since i need only C and P template's regions 
-                    page = page_dictionary[img_id]
-                    # i need to load all the images
-                    if page['img'] is None:
-                        img=load_image(page['img_path'], mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
-                        page_dictionary[img_id]['img']=img.copy()
-                    
-                    if page['page_phash'] is None:
-                        preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
-                        pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
-                        page_dictionary[img_id]['page_phash']=pre_comp['page_phash']
-                
+                # i need to load all pages in memory if the first test failed (i don't reload the ones that were already loaded)
+                page_dictionary = pre_load_image_properties(pages_in_annotation,page_dictionary,template_dictionary,properties=['img','phash'],mode='csv')
+
+                # prepare the pairs for which to check if there is template matching
+                pairs_to_consider = []
                 pages_step_2 = []
                 for img_id in pages_in_annotation:
                     if img_id in correct_pages_step_1:
@@ -237,40 +179,31 @@ def main():
                     else:
                         pages_step_2.append(img_id)
 
-                    page = page_dictionary[img_id]
-
                     for t_id in problematic_pages_step_1:
                         if t_id==img_id: #skip the pairs that were checked (i have already checked each with itself)
                             continue
+                        pairs_to_consider.append([img_id,t_id])
                         
-                        #print(t_id,img_id)
-                        template = template_dictionary[t_id]
-                        pre_computed_align = template['pre_computed_align']
-                        
-                        shifts, centers, processed_rois = compute_misalignment(page['img'], template['align_boxes'], page['img_size'], 
-                                     pre_computed_template=pre_computed_align,scale_factor=SCALE_FACTOR_MATCHING, pre_computed_rois=None)
-                        #i cnnot keep in memory regions from the active image because any time i compare with a template i have to extract from a different region -> set to none
-                        
-                        
-                        if len(shifts)==N_ALIGN_REGIONS: #if there is a match save the matching page number and increase the matcher count, also store the shift/centers for this msot recent match
-                            page_dictionary[img_id]['shifts']=shifts
-                            page_dictionary[img_id]['centers'] = centers 
-                            page_dictionary[img_id]['template_matches']+=1
-                            page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing in the next alignement/censorign phase
-                            page_dictionary[img_id]['matched_page']=t_id
-                            template_dictionary[t_id]['matched_to_this']+=1
-                            test_log[t_id]['template_2'].append(img_id)
+                #perform template matching on the selected pairs
+                page_dictionary,template_dictionary = perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, 
+                                      n_align_regions=N_ALIGN_REGIONS,scale_factor=SCALE_FACTOR_MATCHING)
+                # add the logging of matches in some way: test_log[t_id]['template_2'].append(img_id)
 
-                problematic_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']!=1] #all templates that are matched to more than one 
-                #are problematic, also the ones that ar enot matched
+                # check which pages are problematic for template matching and which are matched correctly instead
+                #all templates that are matched to more than one are problematic, also the ones that ar enot matched
+                problematic_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']!=1] 
                 matched_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']==1] 
 
                 pages_step_3 = pages_step_2[:]
                 if len(matched_templates_step_2)>0:
                     #i perform phash matching to check the matched templates
                     matches_sorted, cost = match_pages_phash(page_dictionary,template_dictionary, pages_step_2, matched_templates_step_2, 
-                                    gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) #As of now i don't consider the confidence of the matching, but I may in future versions
+                                    gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH) 
+                    #As of now i don't consider the confidence of the matching, but I may in future versions
                     #page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+
+                    #I look for problematic pages (that were matched with a signle template in template_matching but are
+                    # now matched to a different template by phash)
                     for match in matches_sorted:
                         img_id = match["page_index"] 
                         t_id = match["template_index"]
@@ -494,32 +427,6 @@ def visualize_templates_w_annotations(annotation_files,annotation_roots,npy_data
             img = load_image(img_path, mode=mode, verbose=False)
             plot_rois_on_image(img, debug_boxes, save_debug_path,colors=colors)
 
-#i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
-def load_template_info(annotation_files,annotation_file_names,annotation_path):
-    annotation_roots=[]
-    path_npy=os.path.join(annotation_path,"precomputed_features")
-    npy_files=list_files_with_extension(path_npy, "npy", recursive=False)
-    npy_file_names = [get_basename(npy_file, remove_extension=True) for npy_file in npy_files]
-
-    # I match them with the annotation file names (will be a more complex function, in this test the names are the same)
-    #check that names match
-    if check_name_matching(annotation_file_names, npy_file_names, logger) == 1:
-        logger.error(f"Mismatch between annotation files and numpy files . Exiting.")
-        return 1
-    #check that they are sorted in the same way
-    assert annotation_file_names == npy_file_names, "Annotation files and numpy files are not in the same order."
-
-    #i load the data i will use (xml first)
-    for i, annotation_file in enumerate(annotation_files):
-        #_ ,root = load_xml(annotation_file)
-        with open(annotation_file, 'r') as f: root = json.load(f)
-        annotation_roots.append(root)
-    #then numpy arrays
-    npy_data=[]
-    for i, npy_file in enumerate(npy_files):
-        data_dict = np.load(npy_file, allow_pickle=True).item()
-        npy_data.append(data_dict)
-    return annotation_roots, npy_data
 
 def get_roi_boxes(root,pre_computed,img_id):
     roi_boxes = []
@@ -541,21 +448,6 @@ def get_roi_boxes(root,pre_computed,img_id):
     #print(i)
     roi_boxes.append(blank_box) # i put the blank box as the last one
     pre_computed_rois.append(pre_computed_blank)
-    return roi_boxes, pre_computed_rois
-
-def get_align_boxes(root,pre_computed,img_id):
-    roi_boxes = []
-    pre_computed_rois = []
-    bb_list=get_attributes_by_page(root, img_id)
-    img_size = get_page_dimensions(root,img_id)
-
-    i=0
-    for box in bb_list:
-        box_coords=get_box_coords_json(box,img_size)
-        if box['sub_attribute'] == "align":
-            roi_boxes.append(box_coords)
-            pre_computed_rois.append(pre_computed[i])
-        i+=1
     return roi_boxes, pre_computed_rois
 
 def get_text_boxes(root,pre_computed,img_id):
@@ -591,11 +483,6 @@ def get_censor_boxes(root,img_id):
         i+=1
     return roi_boxes, partial_coverage
 
-def find_corresponding_file(sorted_files, img_name):
-    index=get_page_number(img_name)
-    if index <= len(sorted_files):
-        return sorted_files[index-1]
-    return None
 
 def save_censored_image(img, censor_boxes, save_path,n_p,n_doc,n_page,warning='00', verbose=False,partial_coverage=None,logger=None,**kwargs):
     parent_path=os.path.join(save_path, f"patient_{n_p}", f"document_{n_doc}")#, f"censored_page_{n_page}.png")

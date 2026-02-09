@@ -1,4 +1,5 @@
 from time import perf_counter, time
+import logging
 
 class FileWriter:
     def __init__(self, enabled=False,path=None):
@@ -23,3 +24,10 @@ class FileWriter:
             return
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(text + "\n")
+
+def initialize_logger(verbose,logger):
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+    else:
+        logging.disable(logging.CRITICAL)
