@@ -66,7 +66,7 @@ def main():
         process_pdf_files(n_template,pdf_files,save_path,id,logger=subj_time_logger)
         subj_time_logger.call_end('complete_process',block=True)
 
-    logger.info("Conversion finished")
+    logger.info("Conversion finished") 
     return 0
 
 

@@ -203,6 +203,22 @@ def load_annotation_tree(logger,annotation_path):
 
     return annotation_file_names, annotation_files
 
+def load_templates_tree(logger,template_path,annotation_file_names=None):
+    ''' given the folder in which the png templates are stored it returns the folder paths and their basenames (q_1,q_2, ...)
+    also it checks (optionally) that they correspond to the annotation tree'''
+    template_folders = list_subfolders(template_path, recursive=False)
+    template_folder_names = [get_basename(p, remove_extension=False) for p in template_folders]
+    logger.debug("Template folder names: %s", template_folder_names)
+
+    if annotation_file_names:
+        #check that names match
+        if check_name_matching(annotation_file_names, template_folder_names, logger) == 1:
+            logger.error("Mismatch between annotation files and template folders. Exiting.")
+            return 1
+        #check that they are sorted in the same way
+        assert annotation_file_names == template_folder_names, "Annotation files and template folders are not in the same order."
+    return template_folder_names, template_folders
+
 def load_subjects_tree(logger, filled_path):
     ''' this function takes the path that collects all pngs to process and returns the list of the paths of the subfolders
     and of their base names (I expect the filled path to have N folders inside each containing the data of a different subject)

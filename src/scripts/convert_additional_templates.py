@@ -2,7 +2,7 @@
 import argparse
 import logging
 import os
-from src.utils.convert_utils import pdf_to_images,save_as_is,extract_images
+from src.utils.convert_utils import pdf_to_images,save_as_is,extract_images, process_pdf_files
 from src.utils.file_utils import list_files_with_extension, get_basename, create_folder,list_subfolders,get_page_number
 from time import perf_counter
 from pathlib import Path
@@ -64,42 +64,7 @@ def main():
     return 0
 
 
-def process_pdf_files(n_quest,pdf_files,save_path):
-    #num_files=len(pdf_files)
-    group_1= []#1,2,3,5,6,7,9] #in this group the templates are saved as separate pdf files, each a tiff image
-    group_2=  []#8,10,11,12,13] #in this group the templates are saved as single pdf with all the pages
-    group_3 = [4]#4] #come 2 ma in ordine inverso
-    if n_quest in group_1:
-        #_t0 = perf_counter()
-        for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
-            file_name = get_basename(pdf_file,remove_extension=True)
-            create_folder(save_path, parents=True, exist_ok=True)
-            out_path = os.path.join(save_path, file_name)
-            images_data,doc=extract_images(pdf_file)
-            save_as_is(doc,0,images_data,out_path) #i always have a single image
-        #_t1 = perf_counter()
-        #print(f"time={( _t1 - _t0 ):0.6f}s")
-    elif n_quest in group_2:
-        for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
-            sub_folder_name=get_basename(pdf_file,remove_extension=True)
-            doc_path = os.path.join(save_path, sub_folder_name)
-            images_data,doc=extract_images(pdf_file)
-            create_folder(doc_path, parents=True, exist_ok=True)
-            for j, image in enumerate(images_data):
-                out_path = os.path.join(doc_path, f"page_{j+1}")
-                save_as_is(doc,j,images_data,out_path) #i always have a single image
-    elif n_quest in group_3:
-        for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
-            sub_folder_name=get_basename(pdf_file,remove_extension=True)
-            doc_path = os.path.join(save_path, sub_folder_name)
-            images_data,doc=extract_images(pdf_file)
-            create_folder(doc_path, parents=True, exist_ok=True)
 
-            for j in range(len(images_data)):
-                out_path = os.path.join(doc_path, f"page_{j+1}")
-                save_as_is(doc,len(images_data)-j-1,images_data,out_path) #i always have a single image
-
-    return 0
 
 if __name__ == "__main__":
     main()

@@ -65,7 +65,7 @@ def main():
 
     # initialize the variables 
     skip_checking_1 = args.skip_checking_1
-    skip_checking_2 = args.skip_checking_2
+    skip_checking_2 = args.skip_checking_2 
     skip_aligning = args.skip_aligning
     save_path = args.save_path
     annotation_path = args.annotation_path
