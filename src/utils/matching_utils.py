@@ -12,7 +12,7 @@ from src.utils.file_utils import get_basename, create_folder, check_name_matchin
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
-from src.utils.json_parsing import get_align_boxes
+from src.utils.json_parsing import get_align_boxes, get_text_boxes
 
 
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
@@ -326,9 +326,11 @@ def initialize_sorting_dictionaries(sorted_files, root,mode='cv2'):
         page_dictionary[img_id]['stored_template']=None # to store the features extracted from the align regions 
         #for the page (will be overwritten each time i compare with diff template)
         page_dictionary[img_id]['matched_page']=None #initially I assume the page is matched to the same index template
+        page_dictionary[img_id]['matched_page_list']=[] #holds the list of all successive matches for the page
         page_dictionary[img_id]['page_phash']=None
         page_dictionary[img_id]['match_phash']=None
         page_dictionary[img_id]['text']=None
+        # M: there is some redundancy -> rewrite the keys to make it less crowded
 
         censor_type=get_censor_type(root,img_id) 
         template_dictionary[img_id]['type']=censor_type
@@ -337,6 +339,9 @@ def initialize_sorting_dictionaries(sorted_files, root,mode='cv2'):
         template_dictionary[img_id]['matched_to_this']=0
         template_dictionary[img_id]['page_phash']=None
         template_dictionary[img_id]['final_match']=None
+        template_dictionary[img_id]['text']=None
+        template_dictionary[img_id]['text_box']=None
+        template_dictionary[img_id]['psm']=None
         #template_dictionary[img_id]['text']=None
         
     #print(len(templates_to_consider))
@@ -365,10 +370,17 @@ def pre_load_selected_templates(templates_to_consider,npy_dict, root, template_d
     for t_id in templates_to_consider:
         pre_computed = npy_dict[t_id]
         align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,t_id) 
+        text_boxes, pre_computed_texts = get_text_boxes(root,pre_computed,t_id) #i know that i have a single text_box ->
+        text_box, pre_computed_text = text_boxes[0], pre_computed_texts[0]['text']
+        psm = pre_computed_texts[0]['psm']
+
         template_dictionary[t_id]['align_boxes']=align_boxes
         template_dictionary[t_id]['pre_computed_align']=pre_computed_align
         template_dictionary[t_id]['page_phash']=pre_computed[-1]['page_phash']
         template_dictionary[t_id]['border_crop_pct']=pre_computed[-1]['border_crop_pct']
+        template_dictionary[t_id]['text']=pre_computed_text
+        template_dictionary[t_id]['text_box']=text_box
+        template_dictionary[t_id]['psm']=psm
     return template_dictionary
 
 def pre_load_image_properties(pages_to_consider,page_dictionary,template_dictionary,properties=[],mode='csv'):
@@ -405,13 +417,14 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
                                 pre_computed_template=pre_computed_align,scale_factor=scale_factor) #recall this functions returns a shift for each good match
         #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
         
-        if len(shifts)==n_align_regions:
+        if len(shifts)>=n_align_regions:
             page_dictionary[img_id]['shifts'] = shifts
             page_dictionary[img_id]['centers'] = centers 
             page_dictionary[img_id]['template_matches']=1
             page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
-            page_dictionary[img_id]['matched_page']=img_id
-            template_dictionary[img_id]['matched_to_this']+=1
+            page_dictionary[img_id]['matched_page']=t_id
+            page_dictionary[img_id]['matched_page_list'].append(t_id)
+            template_dictionary[t_id]['matched_to_this']+=1
     return page_dictionary,template_dictionary
 
 def perform_phash_matching(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
@@ -420,3 +433,141 @@ def perform_phash_matching(page_dictionary,template_dictionary, pages_list, temp
                             gap_threshold=gap_threshold,max_dist=max_dist) #As of now i don't consider the confidence of the matching, but I may in future versions
     page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
     return page_dictionary
+
+def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_dictionary,template_dictionary,text_similarity_metric,mode='csv'):
+    similarity = np.zeros((len(pages_step_3), len(problematic_templates_step_2)))
+    #i need to iterate on all the remaining temlates and on all the remaining pages that are not the final match of a template
+    for jj,t_id in enumerate(problematic_templates_step_2):
+
+        for ii,img_id in enumerate(pages_step_3):
+            if page_dictionary[img_id]['text']==None:
+                patch = preprocess_text_region(page_dictionary[img_id]['img'], template_dictionary[t_id]['text_box'], mode=mode, verbose=False)
+                page_text = extract_features_from_text_region(patch, mode=mode, verbose=False, psm=template_dictionary[t_id]['psm'])['text']
+            else:
+                page_text = page_dictionary[img_id]['text']
+            similarity[ii,jj] = compare_pages_same_section(page_text, template_dictionary[t_id]['text'])[text_similarity_metric]
+    #print(similarity) 
+
+    matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
+    for match in matches_sorted:
+        img_id = match["page_index"] 
+        t_id = match["template_index"]
+        template_dictionary[t_id]['final_match']=img_id 
+    return template_dictionary
+
+
+########### ORDERING SCHEMES ######################
+
+def ordering_scheme_base(pages_in_annotation, root, sorted_files, npy_dict, 
+                         n_align_regions,scale_factor,gap_threshold,max_dist, text_similarity_metric, mode='csv'):
+    '''this ordering scheme assumes we know the subject, that we have all 
+    the pages from a certain questionnaire. It first checks if the expected ordering is sqtisfied using phqsh qnd templqte mqtching
+    if not sqtisfied performs phqsh qnd templqte mqtching on qll pqges (not only pqges to censor)
+    finqlly mqtches problemqtic pqges using ocr'''
+    # load dictionary to store warning messages on pages
+    test_log = {'doc_level_warning':None}
+    for p in pages_in_annotation:
+        test_log[p]={'failed_test_1': False, 'phash_1': None, 'template_1': None,
+                        'failed_test_2': False, 'phash_2': None, 'template_2': None, 
+                        'OCR_WARNING': None, 'OCR': None}
+    
+    #initialize the dictionaries i will use to store info on the sorting process
+    page_dictionary,template_dictionary = initialize_sorting_dictionaries(sorted_files, root,mode=mode)
+    #pre load the images to be processed (according to the templates that we want to censor)
+    page_dictionary,template_dictionary, templates_to_consider = pre_load_images_to_censor(template_dictionary, page_dictionary, mode=mode)
+
+    #pre_load_template_info
+    template_dictionary = pre_load_selected_templates(templates_to_consider,npy_dict, root, template_dictionary)
+    #pre_load phash for images
+    page_dictionary = pre_load_image_properties(templates_to_consider,page_dictionary,template_dictionary,properties=['phash'],mode=mode)
+    
+    #perform template_matching and update the matching keys in the dictionaries
+    page_dictionary,template_dictionary = perform_template_matching(templates_to_consider,page_dictionary,template_dictionary, 
+                                n_align_regions=n_align_regions,scale_factor=scale_factor)
+        
+    #perform phash matching
+    page_dictionary = perform_phash_matching(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
+                    gap_threshold=gap_threshold,max_dist=max_dist)
+
+    #check for which pages at least one test failed (page not matched to expected template for phash or template_matching)
+    problematic_pages_step_1 = []
+    correct_pages_step_1 = []
+    for t_id in templates_to_consider:
+        if page_dictionary[t_id]['match_phash']!=t_id or page_dictionary[t_id]['matched_page']!=t_id: #should log which test failed for debugging (eg code 1 ->
+            #only phash_failed)
+            problematic_pages_step_1.append(t_id)
+            test_log[t_id]['failed_test_1'] = True
+        else: 
+            correct_pages_step_1.append(t_id)
+            template_dictionary[t_id]['final_match']=t_id
+        test_log[t_id]['phash_1']=page_dictionary[t_id]['match_phash']
+        test_log[t_id]['template_1']=page_dictionary[t_id]['matched_page']
+
+    if len(problematic_pages_step_1)>0:
+        # i need to load all pages in memory if the first test failed (i don't reload the ones that were already loaded)
+        page_dictionary = pre_load_image_properties(pages_in_annotation,page_dictionary,template_dictionary,properties=['img','phash'],mode='csv')
+
+        # prepare the pairs for which to check if there is template matching
+        pairs_to_consider = []
+        pages_step_2 = []
+        for img_id in pages_in_annotation:
+            if img_id in correct_pages_step_1:
+                continue
+            else:
+                pages_step_2.append(img_id)
+
+            for t_id in problematic_pages_step_1:
+                if t_id==img_id: #skip the pairs that were checked (i have already checked each with itself)
+                    continue
+                pairs_to_consider.append([img_id,t_id])
+                
+        #perform template matching on the selected pairs
+        page_dictionary,template_dictionary = perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, 
+                                n_align_regions=n_align_regions,scale_factor=scale_factor)
+        
+        #log the results of the matching
+        for img_id in pages_step_2:
+            test_log[img_id]['template_2']=page_dictionary[img_id]['matched_page_list']
+
+        # check which pages are problematic for template matching and which are matched correctly instead
+        #all templates that are matched to more than one are problematic, also the ones that ar enot matched
+        problematic_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']!=1] 
+        matched_templates_step_2 = [p for p in problematic_pages_step_1 if template_dictionary[p]['matched_to_this']==1] 
+
+        #i perform phash matching to check the matched templates
+        pages_step_3 = pages_step_2[:]
+        if len(matched_templates_step_2)>0:
+            matches_sorted, cost = match_pages_phash(page_dictionary,template_dictionary, pages_step_2, matched_templates_step_2, 
+                            gap_threshold=gap_threshold,max_dist=max_dist) 
+            #As of now i don't consider the confidence of the matching, but I may in future versions
+            #page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+
+            #I look for problematic pages (that were matched with a signle template in template_matching but are
+            # now matched to a different template by phash)
+            for match in matches_sorted:
+                img_id = match["page_index"] 
+                t_id = match["template_index"]
+                test_log[t_id]['phash_2'] = img_id
+                if page_dictionary[img_id]['matched_page']!=t_id:
+                    problematic_templates_step_2.append(t_id)
+                else:
+                    template_dictionary[t_id]['final_match']=img_id
+                    #if a page was matched i can remove from the list of pages to pass to step_3
+                    pages_step_3.remove(img_id)
+
+        # if there are problematic pages i need to process further; If only one is left out i check it regardless
+        # I test with the strongest approach (OCR)
+        if len(problematic_templates_step_2)>0: 
+            template_dictionary = perform_ocr_matching(pages_step_3,problematic_templates_step_2, 
+                                                        page_dictionary, template_dictionary,text_similarity_metric=text_similarity_metric, mode=mode)  
+    
+    #reciprocate the matching templates -> pages, pages -> templates
+    for t_id in templates_to_consider: 
+        img_id = template_dictionary[t_id]['final_match']
+        if img_id:
+            page_dictionary[img_id]['matched_page'] = t_id 
+    #i update the test_log with the ocr results
+    for img_id in pages_step_3:
+        test_log[img_id]['OCR']=page_dictionary[img_id]['matched_page']
+
+    return page_dictionary,template_dictionary, test_log

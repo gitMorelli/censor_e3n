@@ -165,3 +165,18 @@ def get_align_boxes(root,pre_computed,img_id):
             pre_computed_rois.append(pre_computed[i])
         i+=1
     return roi_boxes, pre_computed_rois
+
+def get_text_boxes(root,pre_computed,img_id):
+    roi_boxes = []
+    pre_computed_rois = []
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
+    i=0
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['sub_attribute'] == "text":
+            roi_boxes.append(box_coords)
+            pre_computed_rois.append(pre_computed[i])
+        i+=1
+    return roi_boxes, pre_computed_rois
