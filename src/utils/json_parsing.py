@@ -180,3 +180,44 @@ def get_text_boxes(root,pre_computed,img_id):
             pre_computed_rois.append(pre_computed[i])
         i+=1
     return roi_boxes, pre_computed_rois
+
+
+def get_roi_boxes(root,pre_computed,img_id):
+    roi_boxes = []
+    pre_computed_rois = []
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
+    i=0
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['label'] == "roi" and box['sub_attribute']=='standard':
+            roi_boxes.append(box_coords)
+            pre_computed_rois.append(pre_computed[i])
+        elif box['label'] == "roi" and box['sub_attribute']=="blank":
+            blank_box=box_coords
+            pre_computed_blank=pre_computed[i]
+            #print("Found blank box")
+        i+=1
+    #print(i)
+    roi_boxes.append(blank_box) # i put the blank box as the last one
+    pre_computed_rois.append(pre_computed_blank)
+    return roi_boxes, pre_computed_rois
+
+def get_censor_boxes(root,img_id):
+    roi_boxes = []
+    partial_coverage=[]
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
+    i=0
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['label'] == "censor":
+            roi_boxes.append(box_coords)
+            if box['sub_attribute'] == "partial":
+                partial_coverage.append(True)
+            else:
+                partial_coverage.append(False)
+        i+=1
+    return roi_boxes, partial_coverage

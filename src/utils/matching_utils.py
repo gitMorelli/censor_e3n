@@ -571,3 +571,4 @@ def ordering_scheme_base(pages_in_annotation, root, sorted_files, npy_dict,
         test_log[img_id]['OCR']=page_dictionary[img_id]['matched_page']
 
     return page_dictionary,template_dictionary, test_log
+
