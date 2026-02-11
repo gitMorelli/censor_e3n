@@ -21,7 +21,6 @@ from src.utils.feature_extraction import extract_features_from_page, preprocess_
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
 from src.utils.logging import FileWriter, initialize_logger
-from src.utils.matching_utils import update_phash_matches, match_pages_phash, check_matching_correspondence, compare_pages_same_section, match_pages_text
 
 
 def check_matching_correspondence(page_dict, pages_list):
