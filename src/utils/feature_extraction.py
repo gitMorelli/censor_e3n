@@ -12,6 +12,8 @@ from scipy.fftpack import dct
 import pytesseract #for ocr
 pytesseract.pytesseract.tesseract_cmd = r'//vms-e34n-databr/2025-handwriting\programs\tesseract\tesseract.exe'
 
+from src.utils.file_utils import serialize_keypoints
+
 ModeImage = Union[Image.Image, np.ndarray]
 
 def _normalize_mode(mode: str) -> str:
@@ -637,17 +639,31 @@ def extract_features_from_page(patch: ModeImage, mode: str = "cv2",
     if 'page_phash' in to_compute:
         features['page_phash']=page_phash(patch, hash_size=8, border_crop_pct=kwargs.get('border_crop_pct',0))
         features['border_crop_pct']=kwargs.get('border_crop_pct',0) #I need to store the parameter to ensure the images to match will be processed in the same way
+    if 'orb' in to_compute:
+        orb = cv2.ORB_create(nfeatures=2000) #the patch should be grayscaled (it is since i expect it also for phash)
+        kp, des = orb.detectAndCompute(patch, None)
+        features['orb_kp']=serialize_keypoints(kp)
+        features['orb_des']=des
     if verbose:
         _t1 = perf_counter()
         print(f"extract_features_from_patch: mode={mode} time={( _t1 - _t0 ):0.6f}s")
 
     return features
 
-def preprocess_text_region(img,box,mode='cv2',verbose=False): #now it is the same as the preprocess alignement region but i can tune it
+def preprocess_text_region(img,box,mode='cv2',aggressive=True,verbose=False): #now it is the same as the preprocess alignement region but i can tune it
     """Crop and convert to grayscale a patch from img given box."""
     patch = crop_patch(img, box, mode=mode, verbose=verbose)
     gray_patch = convert_to_grayscale(patch, mode=mode, verbose=verbose)
+    if aggressive:
+        # 2. Rescale (Zoom in) - Tesseract loves larger text
+        gray_patch = cv2.resize(gray_patch, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
 
+        # 3. Apply Gaussian Blur to reduce noise
+        gray_patch = cv2.GaussianBlur(gray_patch, (5, 5), 0)
+
+        # 4. Apply Adaptive Thresholding (Better than standard Otsu for pages)
+        gray_patch = cv2.adaptiveThreshold(gray_patch, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                            cv2.THRESH_BINARY, 11, 2)
     return gray_patch
 
 def extract_features_from_text_region(patch: ModeImage, mode: str = "cv2", 

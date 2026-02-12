@@ -78,10 +78,40 @@
       },
       "problemMatcher": []
     },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: id_identification (LocalEnv)",
+      "type": "process",
+      "command": "//vms-e34n-databr//2025-handwriting/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
     // ---------------------------------------------------  TESTS -------------------------------------------------------------------
     {
       //"label": "Python DEbugger: Censor on gustaveroussy",
       "label": "Python Debugger: read_samples_from_shared_folder (LocalEnv)",
+      "type": "process",
+      "command": "//vms-e34n-databr//2025-handwriting:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: tesseract_tests (LocalEnv)",
       "type": "process",
       "command": "//vms-e34n-databr//2025-handwriting:/programs/miniconda3/envs/LocalEnv/python.exe",
       "args": ["${file}"],
