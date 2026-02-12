@@ -236,7 +236,7 @@ def load_subjects_tree(logger, filled_path):
 #i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
 def load_template_info(logger,annotation_files,annotation_file_names,annotation_path, security_check=True, selected_files = None):
     if selected_files == None:
-        selected_files = [f"q_{i}" for i in range(1,13)]+["layout2_q_1"]
+        selected_files = [f"q_{i}" for i in range(1,13)]+["q_1v2"]
     annotation_roots=[]
     path_npy=os.path.join(annotation_path,"precomputed_features")
     npy_files=list_files_with_extension(path_npy, "npy", recursive=False)

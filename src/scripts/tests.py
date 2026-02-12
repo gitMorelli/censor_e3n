@@ -12,6 +12,7 @@ from PyPDF2 import PdfReader
 import re
 import math
 import cv2
+import pandas as pd
 import pytesseract #for ocr
 pytesseract.pytesseract.tesseract_cmd = r'//vms-e34n-databr/2025-handwriting\programs\tesseract\tesseract.exe'
 
@@ -45,27 +46,65 @@ def parse_args():
     return parser.parse_args()
 
 
+def calculate_accuracy(df, col1, col2):
+    """
+    Returns the accuracy (matches / total) between two columns.
+    """
+    # This creates a boolean Series where True = 1 and False = 0
+    matches = (df[col1] == df[col2])
+    
+    # Taking the mean of booleans gives the percentage of True values
+    accuracy = matches.mean()
+    
+    return accuracy
 
+def calculate_grouped_accuracy(df, col1, col2, group_col='pdf_name'):
+    """
+    Groups by a column, takes the mode of the ID columns, 
+    and returns the accuracy of those modes.
+    """
+    # 1. Group by the PDF name and take the mode (most frequent)
+    # Note: .mode() can return multiple values if there's a tie, 
+    # so we take .iloc[0] to ensure we get a single value.
+    grouped_df = df.groupby(group_col)[[col1, col2]].agg(
+        lambda x: x.mode().iloc[0] if not x.mode().empty else None
+    )
+    
+    # 2. Calculate accuracy on the aggregated results
+    accuracy = (grouped_df[col1] == grouped_df[col2]).mean()
+    
+    return accuracy, grouped_df
+
+def calculate_final_accuracy(df, col1, col2, group_col='pdf_name'):
+    # 1. Eliminate rows that have 'ISP' in col1
+    df_clean = df[~df[col1].astype(str).str.contains('ISP', na=False)].copy()
+    
+    # 2. Convert col1 (and col2 for consistency) to float
+    # 'coerce' turns non-numeric values into NaN so the code doesn't crash
+    df_clean[col1] = pd.to_numeric(df_clean[col1], errors='coerce')
+    df_clean[col2] = pd.to_numeric(df_clean[col2], errors='coerce')
+    
+    # 3. Drop any rows that became NaN during conversion (optional but recommended)
+    df_clean = df_clean.dropna(subset=[col1, col2])
+
+    # 4. Group by PDF and take the mode
+    grouped_df = df_clean.groupby(group_col)[[col1, col2]].agg(
+        lambda x: x.mode().iloc[0] if not x.mode().empty else None
+    )
+    
+    # 5. Calculate accuracy
+    if grouped_df.empty:
+        return 0.0
+        
+    accuracy = (grouped_df[col1] == grouped_df[col2]).mean()
+    return accuracy
 
 #experiments on using pytesseract for identifying the id: https://gemini.google.com/share/54f0575cafcb
 def main():
     args = parse_args()
-    path_file = "//vms-e34n-databr/2025-handwriting\\data\\test_read_shared_files\\Q5\\A9Y0H8E8\\ISP00JLX_ISP01RGX.tif.pdf"
-    path_file = "//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers\\Q5\\ISP00JLX_ISP01RGX.tif.pdf"
-    path_file ="//intra.igr.fr/profils$/UserCtx_Data$/A_MORELLI\\Downloads\\ISP00DLO_ISP013FX.tif.pdf"
-    path_file = "//vms-e34n-databr/2025-handwriting\\data\\test_id_retrival\\mixed\\5_4999742_4.pdf"
-
-    list_of_images = process_pdf_files(-1,[path_file],None,save=False)
-    image = list_of_images[0]
-
-    height = image.shape[0]
-    width = image.shape[1]
-    t_1=perf_counter()
-    orb = cv2.ORB_create(nfeatures=2000)
-    patch = preprocess_page(image)
-    kp_unkn, des_unkn = orb.detectAndCompute(patch, None)
-    t_2 = perf_counter()
-    print(t_2-t_1)
+    load_path="//vms-e34n-databr/2025-handwriting\\data\\test_id_retrival\\results\\extracted_results.csv"
+    df = pd.read_csv(load_path,delimiter=';')
+    print("Accuracy id:", calculate_final_accuracy(df,'true_id','extracted_id'))
 
 
 

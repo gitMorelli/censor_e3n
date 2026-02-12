@@ -59,7 +59,7 @@ def parse_args():
 
 
 def main():
-    args = parse_args()
+    args = parse_args() 
 
     template_path = args.template_path
     save_path = args.save_path

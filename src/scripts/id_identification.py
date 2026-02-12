@@ -32,7 +32,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-LOAD_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_id_retrival\\mixed"#additional"#100263_template"
+LOAD_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_id_retrival\\mixed_2"#additional"#100263_template"
 TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\current_template"#additional"#100263_template"
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_id_retrival\\results"#additional"#100263_template" 
 ANNOTATION_PATH = "//vms-e34n-databr/2025-handwriting\\data\\\\annotations\\current_template"
@@ -102,23 +102,55 @@ def main():
         list_of_images = process_pdf_files(-1,[pdf_path],None,save=False) #i extract all pages in order from the pdf
 
         n_images = len(list_of_images)
+        q_from_page_number = None
+        if n_images == 32:
+            q_from_page_number = 8
+        elif n_images == 12:
+            q_from_page_number = 10
+        print("-----"*50)
+        print("Processing file: ", get_basename(pdf_path))
         
         for j,image in enumerate(list_of_images):
             height = image.shape[0]
             width = image.shape[1]
-            box = [0,0,width,height/3]
+            if q_from_page_number == 8:
+                box = [0,height*3/4,width,height]
+            else:
+                box = [0,0,width,height/4]
+            print("extrqcting text")
             patch = preprocess_text_region(image,box,verbose=False, aggressive=False)
             extracted_id=extract_special_id(patch) 
-
-            gray_image=preprocess_page(image)
-            matched_q,matched_p = discover_template(gray_image,annotation_file_names,annotation_roots,npy_data)
+            
+            print("performing matching")
+            if q_from_page_number == None:
+                gray_image=preprocess_page(image)
+                matched_q,matched_p = discover_template(gray_image,annotation_file_names,annotation_roots,npy_data)
+            else:
+                matched_q = q_from_page_number
+                matched_p = j+1
+            
+            # extract ground truths from file name
+            count = pdf_names[i].count('_')
+            pieces = pdf_names[i].split('_') 
+            if count == 2:
+                true_q = pieces[0]
+                true_id = pieces[1]
+                true_p = pieces[2]
+            else:
+                true_q = pieces[0]
+                true_id = pieces[1]
+                true_p="multi"
 
             new_row = {"pdf_name": pdf_names[i], "saved_file_name": pdf_names[i]+f'_page_{j}', 
-                         "extracted_id": extracted_id,"full_text": None, "matched_template": matched_q,"matched_template_page": matched_p}
+                         "extracted_id": extracted_id,"true_id":true_id,"full_text": None, "matched_template": matched_q, 
+                         "true_template":true_q,"matched_template_page": matched_p,"true_page":true_p}
             '''print(pdf_names[i])
             print(text)
             print("-=-="*50)'''
             data_rows.append(new_row)
+
+            if q_from_page_number == 8: #i only inspect the first page (i don't have it on other pages)
+                break
 
         
     extracted_results = pd.DataFrame(data_rows)
