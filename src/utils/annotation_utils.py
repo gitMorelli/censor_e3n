@@ -15,7 +15,7 @@ from src.utils.file_utils import get_basename, create_folder, check_name_matchin
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
-from src.utils.json_parsing import get_align_boxes, get_text_boxes, get_roi_boxes, get_censor_boxes
+from src.utils.json_parsing import get_align_boxes, get_ocr_boxes, get_roi_boxes, get_censor_boxes
 
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
@@ -34,7 +34,7 @@ from src.utils.censor_utils import save_as_is_no_censoring, save_original_w_boxe
 from src.utils.censor_utils import enlarge_censor_regions, save_pre_post_boxes, save_censored_image, generate_warning_string, censor_page_base
 
 
-def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_path_pctg, mode='cvs'):
+def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_path_pctg, mode='cvs'): 
     properties_list = []
     #iterate on the selected boxes and precompute features
     for box in bb_list:
@@ -52,7 +52,11 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
             patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
-        elif box['sub_attribute']=='text':
+        elif box['sub_attribute']=='text' and box['label']=='roi': #i may extract differen features for this wrt to standard roi
+            patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
+            pre_comp = extract_features_from_roi(patch, mode=mode, 
+                                                verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
+        elif box['sub_attribute']=='ocr':
             patch = preprocess_text_region(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_text_region(patch, mode=mode, 
                                                 verbose=True,psm=ocr_psm)
@@ -60,16 +64,21 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
     
     #precompute features for the whole page
     preprocessed_img = preprocess_page(img)
-    pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=crop_path_pctg)
+    pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash','orb'],border_crop_pct=crop_path_pctg)
     properties_list.append(pre_comp) #i add as -1 element, recall when you perform the censoring
 
     return properties_list
 
-def precompute_and_store_template_properties(annotation_files, template_folders, logger, save_path, annotation_file_names,ocr_psm,crop_patch_pctg, mode='csv'):
+def precompute_and_store_template_properties(annotation_files, template_folders, logger, save_path, annotation_file_names, template_folder_names,ocr_psm,crop_patch_pctg, mode='csv'):
+    def get_corresponding(annotation_name, template_folder_names):
+        for j,template_name in enumerate(template_folder_names):
+            if template_name == annotation_name:
+                return j
     #i can access them by index since they are sorted in the same way
     for i, annotation_file in enumerate(annotation_files):
         logger.info("Processing file %d/%d: %s", i + 1, len(annotation_files), annotation_file)
-        doc_path = template_folders[i]
+        i_corr = get_corresponding(annotation_file_names[i],template_folder_names)
+        doc_path = template_folders[i_corr]
         #pages = list_files_with_extension(doc_path, "png", recursive=False)
         #load the json file
         with open(annotation_file, 'r') as f: json_data = json.load(f)

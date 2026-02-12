@@ -42,10 +42,12 @@ def get_attributes_by_page(json_data, target_page_number):
     # 1. Prepara le liste dei sotto-attributi (normalizzate)
     roi_types = normalize_attribute_list(target_page_data, 'roi_type')
     censor_types = normalize_attribute_list(target_page_data, 'censor_type')
+    censor_close_types = normalize_attribute_list(target_page_data, 'close_type')
 
     # Contatori per tracciare l'indice corrente dei sotto-attributi
     roi_counter = 0
     censor_counter = 0
+    censor_close_counter = 0
 
     # 2. Itera sulle regioni (bounding boxes) della pagina trovata
     labels = target_page_data.get('label', [])
@@ -74,6 +76,10 @@ def get_attributes_by_page(json_data, target_page_number):
             if censor_counter < len(censor_types):
                 sub_attribute = censor_types[censor_counter]
                 censor_counter += 1
+        elif primary_label == 'censor-close':
+            if censor_close_counter < len(censor_close_types):
+                sub_attribute = censor_close_types[censor_close_counter]
+                censor_close_counter += 1
 
         # Aggiungi alla lista dei risultati
         page_attributes.append({
@@ -166,7 +172,7 @@ def get_align_boxes(root,pre_computed,img_id):
         i+=1
     return roi_boxes, pre_computed_rois
 
-def get_text_boxes(root,pre_computed,img_id):
+def get_ocr_boxes(root,pre_computed,img_id): 
     roi_boxes = []
     pre_computed_rois = []
     bb_list=get_attributes_by_page(root, img_id)
@@ -175,7 +181,7 @@ def get_text_boxes(root,pre_computed,img_id):
     i=0
     for box in bb_list:
         box_coords=get_box_coords_json(box,img_size)
-        if box['sub_attribute'] == "text":
+        if box['sub_attribute'] == "ocr":
             roi_boxes.append(box_coords)
             pre_computed_rois.append(pre_computed[i])
         i+=1
@@ -191,7 +197,7 @@ def get_roi_boxes(root,pre_computed,img_id):
     i=0
     for box in bb_list:
         box_coords=get_box_coords_json(box,img_size)
-        if box['label'] == "roi" and box['sub_attribute']=='standard':
+        if box['label'] == "roi" and (box['sub_attribute']=='standard' or box['sub_attribute']=='text'): #i should make a specific output for text boxes?
             roi_boxes.append(box_coords)
             pre_computed_rois.append(pre_computed[i])
         elif box['label'] == "roi" and box['sub_attribute']=="blank":
@@ -221,3 +227,20 @@ def get_censor_boxes(root,img_id):
                 partial_coverage.append(False)
         i+=1
     return roi_boxes, partial_coverage
+
+def get_censor_close_boxes(root,img_id):
+    roi_boxes = []
+    id_boxes = []
+    partial_coverage=[]
+    bb_list=get_attributes_by_page(root, img_id)
+    img_size = get_page_dimensions(root,img_id)
+
+    i=0
+    for box in bb_list:
+        box_coords=get_box_coords_json(box,img_size)
+        if box['label'] == "censor-close" and (box['sub_attribute'] == "standard" or box['sub_attribute'] == "not_sure"):
+            roi_boxes.append(box_coords)
+        elif box['label'] == "censor-close" and box['sub_attribute'] == "identification":
+            id_boxes.append(box_coords)
+        i+=1
+    return roi_boxes, id_boxes

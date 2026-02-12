@@ -5,6 +5,7 @@ import os
 import shutil
 import json
 import numpy as np
+import cv2
 
 def list_files_with_extension(
     folder: Union[str, Path],
@@ -193,7 +194,7 @@ def load_annotation_tree(logger,annotation_path):
     the files are sorted alphabetically (because the function "list_files_with_extension" does it)
     '''
     annotation_files = list_files_with_extension(annotation_path, "json", recursive=False)
-    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path)
+    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path) 
     if not annotation_files:
         logger.warning("No annotation files found. Exiting.")
         return 0
@@ -233,7 +234,9 @@ def load_subjects_tree(logger, filled_path):
     return warning_map, filled_folder_names, filled_folders
 
 #i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
-def load_template_info(logger,annotation_files,annotation_file_names,annotation_path):
+def load_template_info(logger,annotation_files,annotation_file_names,annotation_path, security_check=True, selected_files = None):
+    if selected_files == None:
+        selected_files = [f"q_{i}" for i in range(1,13)]+["layout2_q_1"]
     annotation_roots=[]
     path_npy=os.path.join(annotation_path,"precomputed_features")
     npy_files=list_files_with_extension(path_npy, "npy", recursive=False)
@@ -241,20 +244,32 @@ def load_template_info(logger,annotation_files,annotation_file_names,annotation_
 
     # I match them with the annotation file names (will be a more complex function, in this test the names are the same)
     #check that names match
-    if check_name_matching(annotation_file_names, npy_file_names, logger) == 1:
-        logger.error(f"Mismatch between annotation files and numpy files . Exiting.")
-        return 1
-    #check that they are sorted in the same way
-    assert annotation_file_names == npy_file_names, "Annotation files and numpy files are not in the same order."
+    if security_check:
+        if check_name_matching(annotation_file_names, npy_file_names, logger) == 1:
+            logger.error(f"Mismatch between annotation files and numpy files . Exiting.")
+            return 1
+        #check that they are sorted in the same way
+        assert annotation_file_names == npy_file_names, "Annotation files and numpy files are not in the same order."
 
     #i load the data i will use (xml first)
     for i, annotation_file in enumerate(annotation_files):
         #_ ,root = load_xml(annotation_file)
-        with open(annotation_file, 'r') as f: root = json.load(f)
-        annotation_roots.append(root)
+        if annotation_file_names[i] in selected_files: #i return a template only if it is selectd (standard behavior is select all)
+            with open(annotation_file, 'r') as f: root = json.load(f)
+            annotation_roots.append(root)
     #then numpy arrays
     npy_data=[]
     for i, npy_file in enumerate(npy_files):
-        data_dict = np.load(npy_file, allow_pickle=True).item()
-        npy_data.append(data_dict)
+        if annotation_file_names[i] in selected_files:
+            data_dict = np.load(npy_file, allow_pickle=True).item()
+            npy_data.append(data_dict)
     return annotation_roots, npy_data
+
+
+def serialize_keypoints(kp_list):
+    # Extracts (x, y, size, angle, response, octave, class_id)
+    return [(kp.pt[0], kp.pt[1], kp.size, kp.angle, kp.response, kp.octave, kp.class_id) for kp in kp_list]
+def deserialize_keypoints(kp_data):
+    return [cv2.KeyPoint(x=pt[0], y=pt[1], size=pt[2], angle=pt[3], 
+                         response=pt[4], octave=pt[5], class_id=pt[6]) 
+            for pt in kp_data]

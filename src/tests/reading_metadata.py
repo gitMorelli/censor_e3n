@@ -36,11 +36,60 @@ def parse_args():
     )'''
     return parser.parse_args()
 
+def check_and_extract_pdf(file_path):
+    doc = fitz.open(file_path)
+    full_text = ""
+
+    for page_num, page in enumerate(doc):
+        # Extract text from the pre-computed layer
+        page_text = page.get_text()
+        
+        if page_text.strip():
+            print(f"Page {page_num + 1}: Searchable text found!")
+            full_text += page_text
+        else:
+            print(f"Page {page_num + 1}: No text layer found (likely a raw image).")
+    doc.close()
+    return full_text
+
+def check_deeply(file_path):
+    doc = fitz.open(file_path)
+    page = doc[0] # Test with the first page
+
+    # Try "dict" mode - it shows every individual character and its position
+    text_dict = page.get_text("dict")
+    print(text_dict)
+
+    if not text_dict["blocks"]:
+        print("Zero blocks found. The text might be in an 'Annotation' or 'Form' layer.")
+    else:
+        for block in text_dict["blocks"]:
+            if "lines" in block:
+                for line in block["lines"]:
+                    for span in line["spans"]:
+                        print(f"Found text: {span['text']}")
+    doc.close()
+    return 0
 
 def main():
     args = parse_args()
     path_file = "//vms-e34n-databr/2025-handwriting\\data\\test_read_shared_files\\Q5\\A9Y0H8E8\\ISP00JLX_ISP01RGX.tif.pdf"
     path_file = "//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers\\Q5\\ISP00JLX_ISP01RGX.tif.pdf"
+    path_file ="//intra.igr.fr/profils$/UserCtx_Data$/A_MORELLI\\Downloads\\ISP00DLO_ISP013FX.tif.pdf"
+
+    # Usage
+    print("I check if it is a searchable pdf")
+    ## 1 ##
+    text_data = check_and_extract_pdf(path_file)
+    print(text_data[:500]) # Print first 500 characters
+    ## 2 ## 
+    check_deeply(path_file)
+    ## 3 ##
+    doc = fitz.open(path_file)
+    page = doc[0] # Test with the first page
+    tp = page.get_textpage()
+    print(tp.extractText())
+    doc.close()
 
     print("trying with PyPDF2")
     # Carica il file

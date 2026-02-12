@@ -12,7 +12,7 @@ from src.utils.file_utils import get_basename, create_folder, check_name_matchin
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
-from src.utils.json_parsing import get_align_boxes, get_text_boxes, get_roi_boxes, get_censor_boxes
+from src.utils.json_parsing import get_align_boxes, get_ocr_boxes, get_roi_boxes, get_censor_boxes
 
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image

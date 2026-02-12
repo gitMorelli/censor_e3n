@@ -24,7 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SOURCE = "//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests_ordering\\"
 #"//vms-e34n-databr/2025-handwriting\\vscode\\censor_e3n\\data\\q5_tests\\" # "Z:\\vscode\\censor_e3n\\data\\q5_tests\\" #C:\\Users\\andre\\VsCode\\censoring project\\data\\rimes_tests\\
 CROP_PATCH_PCTG = 0.02
 OCR_PSM=6
@@ -37,17 +36,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
     parser.add_argument(
         "-t", "--template_path",
-        default=SOURCE+"templates",
+        default="//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\current_template",
         help="Path to the template files, saved as folders containing PNG images",
     )
     parser.add_argument(
         "-a", "--annotation_path",
-        default=SOURCE+"annotazioni",
+        default="//vms-e34n-databr/2025-handwriting\\data\\annotations\\current_template",
         help="Directory with the annotation files from cvat for each image",
     )
     parser.add_argument(
         "-s", "--save_path",
-        default=SOURCE+"annotazioni\\precomputed_features",
+        default="//vms-e34n-databr/2025-handwriting\\data\\annotations\\current_template\\precomputed_features",
         help="Directory where I save the final annotation files",
     )
     parser.add_argument(
@@ -56,7 +55,7 @@ def parse_args():
         action="store_true",
         help="Enable debug logging",
     )
-    return parser.parse_args()
+    return parser.parse_args() 
 
 
 def main():
@@ -75,9 +74,10 @@ def main():
 
     annotation_file_names, annotation_files = load_annotation_tree(logger, annotation_path)
 
-    template_folder_names, template_folders = load_templates_tree(logger,template_path,annotation_file_names=annotation_file_names)
+    template_folder_names, template_folders = load_templates_tree(logger,template_path)
 
-    precompute_and_store_template_properties(annotation_files, template_folders, logger, save_path, annotation_file_names,OCR_PSM,CROP_PATCH_PCTG, mode=mode)
+    precompute_and_store_template_properties(annotation_files, template_folders, logger, save_path, 
+                                             annotation_file_names,template_folder_names,OCR_PSM,CROP_PATCH_PCTG, mode=mode)
 
     logger.info("Conversion finished")
     return 0

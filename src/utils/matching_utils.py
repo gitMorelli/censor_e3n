@@ -5,14 +5,18 @@ from scipy.optimize import linear_sum_assignment
 import re
 import unicodedata
 from difflib import SequenceMatcher
+import os
+import math
+import pytesseract #for ocr
+pytesseract.pytesseract.tesseract_cmd = r'//vms-e34n-databr/2025-handwriting\programs\tesseract\tesseract.exe'
 
-from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number, load_template_info
+from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number, load_template_info, deserialize_keypoints
 from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder, load_annotation_tree, load_subjects_tree
 #from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
-from src.utils.json_parsing import get_align_boxes, get_text_boxes
+from src.utils.json_parsing import get_align_boxes, get_ocr_boxes
 
 
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
@@ -54,7 +58,7 @@ def match_pages_phash(page_dict, template_dict, pages_list, templates_to_conside
 
     # Hungarian assignment (minimize total cost)
     assignement = linear_sum_assignment(cost)
-    row_ind, col_ind = assignement
+    row_ind, col_ind = assignement 
 
     '''if the dimension of the two lists is different -> Every single template will be assigned to a page.
     The function will pick the subset of pages that results in the lowest total Hamming distance.
@@ -295,30 +299,34 @@ def assignment_confidence_text(cost: np.ndarray, assignment, gap_threshold: int,
     }
     return confident, report
 
-def initialize_sorting_dictionaries(sorted_files, root,mode='cv2'):
+def initialize_sorting_dictionaries(sorted_files, root,mode='cv2',input_from_file=True):
     ''' this function takes one json annotation file called root (for one template) 
     takes a list of file_paths and returns the page_dictionary, and template_dictionary (each initialized to the starting values)'''
     def find_corresponding_file(sorted_files, img_name):
         index=get_page_number(img_name)
         if index <= len(sorted_files):
             return sorted_files[index-1]
-        return None
+        return None #the sorted files are supposed to be page_1,page_2, .. (they are sorted by number)
 
     pages_in_annotation = get_page_list(root)
     page_dictionary = {}
     template_dictionary = {}
+    for i,file in enumerate(sorted_files):
+        page_dictionary[p]={}   
     for p in pages_in_annotation:
-        page_dictionary[p]={}
         template_dictionary[p]={}
     #iterate on the pages in a document and initialize their parameters
-    for img_id in pages_in_annotation:
-        
-        page_dictionary[img_id]['img_id']=img_id
+    for i,file in enumerate(sorted_files):
+        page_dictionary[img_id]['img_id']=i+1
         img_name=f'page_{img_id}.png'
         page_dictionary[img_id]['img_name']=img_name 
-        png_img_path = find_corresponding_file(sorted_files, img_name)
-        page_dictionary[img_id]['img_path']=png_img_path
-        page_dictionary[img_id]['img_size']=get_page_dimensions(root,img_id)
+        if input_from_file:
+            png_img_path = find_corresponding_file(sorted_files, img_name)
+            page_dictionary[img_id]['img_path']=png_img_path
+        else:
+            page_dictionary[img_id]['img_path']=None
+            page_dictionary[img_id]['img']=file.copy() #the images are already loaded, i put them in the dictionary
+        page_dictionary[img_id]['img_size']=None 
         page_dictionary[img_id]['template_matches']=0 #how many time this page was matched with a template
         page_dictionary[img_id]['shifts']=None #(shift_x,shift_y) for first qnd second region
         page_dictionary[img_id]['centers']=None #(shift_x,shift_y) for first qnd second region
@@ -330,7 +338,7 @@ def initialize_sorting_dictionaries(sorted_files, root,mode='cv2'):
         page_dictionary[img_id]['match_phash']=None
         page_dictionary[img_id]['text']=None
         # M: there is some redundancy -> rewrite the keys to make it less crowded
-
+    for img_id in pages_in_annotation:
         censor_type=get_censor_type(root,img_id) 
         template_dictionary[img_id]['type']=censor_type
         template_dictionary[img_id]['align_boxes']=None #the coordinates of the align boxes for a template
@@ -360,6 +368,8 @@ def pre_load_images_to_censor(template_dictionary,page_dictionary, mode='csv'):
         if censor_type!='N':
             img=load_image(png_img_path, mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
             page_dictionary[img_id]['img']=img.copy()
+            height, width = img.shape[:2] 
+            page_dictionary[img_id]['img_size'] = (width, height)
             templates_to_consider.append(img_id)
         else:
             page_dictionary[img_id]['img']=None
@@ -369,14 +379,14 @@ def pre_load_selected_templates(templates_to_consider,npy_dict, root, template_d
     for t_id in templates_to_consider:
         pre_computed = npy_dict[t_id]
         align_boxes, pre_computed_align = get_align_boxes(root,pre_computed,t_id) 
-        text_boxes, pre_computed_texts = get_text_boxes(root,pre_computed,t_id) #i know that i have a single text_box ->
+        text_boxes, pre_computed_texts = get_ocr_boxes(root,pre_computed,t_id) #i know that i have a single text_box ->
         text_box, pre_computed_text = text_boxes[0], pre_computed_texts[0]['text']
         psm = pre_computed_texts[0]['psm']
 
         template_dictionary[t_id]['align_boxes']=align_boxes
         template_dictionary[t_id]['pre_computed_align']=pre_computed_align
         template_dictionary[t_id]['page_phash']=pre_computed[-1]['page_phash']
-        template_dictionary[t_id]['border_crop_pct']=pre_computed[-1]['border_crop_pct']
+        template_dictionary[t_id]['border_crop_pct']=pre_computed[-1]['border_crop_pct'] 
         template_dictionary[t_id]['text']=pre_computed_text
         template_dictionary[t_id]['text_box']=text_box
         template_dictionary[t_id]['psm']=psm
@@ -385,15 +395,17 @@ def pre_load_selected_templates(templates_to_consider,npy_dict, root, template_d
 def pre_load_image_properties(pages_to_consider,page_dictionary,template_dictionary,properties=[],mode='csv'):
     '''given a list of images and the properties to pre-compute it updates the appropriate 
     keys in the dictionary '''
+    CROP_PATCH_PCTG = template_dictionary[1]['border_crop_pct'] #i can get this parameter from any page template really
     for img_id in pages_to_consider:
         if 'img' in properties:
             if page_dictionary[img_id]['img'] is None:
                 img=load_image(page_dictionary[img_id]['img_path'], mode=mode, verbose=False) #modify code to manage tiff and jpeg if needed
                 page_dictionary[img_id]['img']=img.copy()
+                height, width = img.shape[:2] 
+                page_dictionary[img_id]['img_size'] = (width, height)
         if 'phash' in properties: #should follow im loading because it requires the image to be in the dictionary already
             if page_dictionary[img_id]['page_phash'] is None:
                 preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
-                CROP_PATCH_PCTG = template_dictionary[img_id]['border_crop_pct'] #i can get this parameter from any page template really
                 pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
                 page_dictionary[img_id]['page_phash']=pre_comp['page_phash'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
     return page_dictionary
@@ -419,7 +431,7 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
         if len(shifts)>=n_align_regions:
             page_dictionary[img_id]['shifts'] = shifts
             page_dictionary[img_id]['centers'] = centers 
-            page_dictionary[img_id]['template_matches']=1
+            page_dictionary[img_id]['template_matches']+=1 #should be +=1
             page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
             page_dictionary[img_id]['matched_page']=t_id
             page_dictionary[img_id]['matched_page_list'].append(t_id)
@@ -452,7 +464,174 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
         img_id = match["page_index"] 
         t_id = match["template_index"]
         template_dictionary[t_id]['final_match']=img_id 
-    return template_dictionary
+        page_dictionary[img_id]['matched_page']=t_id
+    return template_dictionary, page_dictionary
+
+def extract_target_numeric(patch, lang, config):
+    text = pytesseract.image_to_string(patch,lang = lang, config = config)
+    # 2. Search for the primary pattern: 6 digits + optional spaces + 1 digit
+    # Pattern: \d{6} (six digits) \s* (zero or more spaces) \d (one digit)
+    primary_pattern = r'\d{6}\s*\d'
+    primary_match = re.search(primary_pattern, text)
+    
+    if primary_match:
+        # Found the specific target! Return it (stripping extra spaces)
+        return primary_match.group(0).replace(" ", ""),text
+
+    # 3. Fallback: Search for the longest numeric string in the entire text
+    # \d+ finds any consecutive sequence of digits
+    all_numeric_strings = re.findall(r'\d+', text)
+    
+    if all_numeric_strings:
+        # Sort by length and take the longest
+        longest_string = max(all_numeric_strings, key=len)
+        return longest_string,text
+    
+    return None,text
+
+
+def get_numeric_data(image, min_conf=50):
+    """
+    Returns a list of numbers found in the image with their 
+    top-left (OpenCV style) coordinates and confidence scores.
+    """
+    # image_to_data returns a TSV-style string by default
+    # Output_type=Output.DICT is the cleanest way to handle this
+    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)
+    
+    numeric_results = []
+    
+    for i in range(len(data['text'])):
+        text = data['text'][i].strip()
+        conf = int(data['conf'][i])
+        
+        # Filter: Is it a number and is the confidence high enough?
+        # This regex-free check handles digits; use .replace('.','') for floats
+        if text.isdigit() and conf > min_conf:
+            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+            
+            # Format: (Text, (x, y, width, height), confidence)
+            numeric_results.append((text, (x, y, w, h), conf))
+            
+    return numeric_results
+
+def discover_template(image,annotation_file_names,annotation_roots,npy_data):
+    orb = cv2.ORB_create(nfeatures=2000)
+    kp_unkn, des_unkn = orb.detectAndCompute(image, None)
+
+    best_match_q = None
+    best_match_p = None
+    max_good_matches = 0
+    
+    # 3. Create a Matcher
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+    for i, root in enumerate(annotation_roots):
+        npy_dict=npy_data[i]
+        questionnaire = annotation_file_names[i]
+        pages_in_annotation = get_page_list(root)
+        for img_id in pages_in_annotation:
+            pre_comp = npy_dict[img_id]
+            orb_kp=deserialize_keypoints(pre_comp[-1]['orb_kp'])
+            orb_des=pre_comp[-1]['orb_des']
+
+            # Match descriptors
+            matches = bf.match(des_unkn, orb_des)
+            
+            # Sort matches by distance (lower distance = better match)
+            matches = sorted(matches, key=lambda x: x.distance)
+            
+            # Count "good" matches (those with a distance below a threshold)
+            good_matches = [m for m in matches if m.distance < 50]
+            
+            if len(good_matches) > max_good_matches:
+                max_good_matches = len(good_matches)
+                best_match_q = questionnaire
+                best_match_p = img_id
+    return best_match_q,best_match_p
+
+
+def extract_special_id(patch):
+    # 1. Helper to get the connection points
+    # We want distance from the RIGHT edge of the 6-digit number 
+    # to the LEFT edge of the single digit.
+    numeric_data=get_numeric_data(patch)
+    
+    # --- Step 1: Check for exactly 6 elements ---
+    for i, (text6, (x6, y6, w6, h6), conf6) in enumerate(numeric_data):
+        if len(text6) == 6:
+            r_center_x = x6 + w6
+            r_center_y = y6 + (h6 / 2)
+            
+            closest_digit = None
+            min_dist = float('inf')
+            
+            for j, (text1, (x1, y1, w1, h1), conf1) in enumerate(numeric_data):
+                # Must be a single digit and NOT the same box
+                if i == j or len(text1) != 1:
+                    continue
+                
+                # Target point: Left-center of the single digit
+                l_center_x = x1
+                l_center_y = y1 + (h1 / 2)
+                
+                # Calculate Euclidean Distance
+                dist = math.sqrt((l_center_x - r_center_x)**2 + (l_center_y - r_center_y)**2)
+                
+                # Requirement: Must be to the right (x1 > x6)
+                if x1 >= x6 + w6 and dist < min_dist:
+                    min_dist = dist
+                    closest_digit = text1
+            
+            if closest_digit:
+                return f"{text6}{closest_digit}"
+
+    # --- Step 2: Look for exactly 7 elements ---
+    for text, coords, conf in numeric_data:
+        if len(text) == 7:
+            if text != "1234567":
+                return text
+            
+    return None
+
+def identify_questionnaire(unknown_path, templates_folder):
+    # 1. Initialize ORB detector
+    orb = cv2.ORB_create(nfeatures=2000)
+    
+    # 2. Load and "fingerprint" the unknown image
+    img_unknown = cv2.imread(unknown_path, cv2.IMREAD_GRAYSCALE)
+    kp_unkn, des_unkn = orb.detectAndCompute(img_unknown, None)
+    
+    best_match_name = None
+    max_good_matches = 0
+    
+    # 3. Create a Matcher
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+    # 4. Compare against all templates in the folder
+    for filename in os.listdir(templates_folder):
+        template_path = os.path.join(templates_folder, filename)
+        img_temp = cv2.imread(template_path, cv2.IMREAD_GRAYSCALE)
+        
+        if img_temp is None: continue
+        
+        # Detect features in template
+        kp_temp, des_temp = orb.detectAndCompute(img_temp, None)
+        
+        # Match descriptors
+        matches = bf.match(des_unkn, des_temp)
+        
+        # Sort matches by distance (lower distance = better match)
+        matches = sorted(matches, key=lambda x: x.distance)
+        
+        # Count "good" matches (those with a distance below a threshold)
+        good_matches = [m for m in matches if m.distance < 50]
+        
+        if len(good_matches) > max_good_matches:
+            max_good_matches = len(good_matches)
+            best_match_name = filename
+
+    return best_match_name, max_good_matches
 
 
 ########### ORDERING SCHEMES ######################
@@ -557,7 +736,7 @@ def ordering_scheme_base(pages_in_annotation, root, sorted_files, npy_dict,
         # if there are problematic pages i need to process further; If only one is left out i check it regardless
         # I test with the strongest approach (OCR)
         if len(problematic_templates_step_2)>0: 
-            template_dictionary = perform_ocr_matching(pages_step_3,problematic_templates_step_2, 
+            template_dictionary, page_dictionary = perform_ocr_matching(pages_step_3,problematic_templates_step_2, 
                                                         page_dictionary, template_dictionary,text_similarity_metric=text_similarity_metric, mode=mode)  
     
     #reciprocate the matching templates -> pages, pages -> templates

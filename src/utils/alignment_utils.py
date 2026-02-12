@@ -44,10 +44,11 @@ def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_cen
     center_x = top_left[0] + w // 2 
     center_y = top_left[1] + h // 2
     expected_x = (f_roi.shape[1] // 2) - shift_wr_center[0]
-    expected_y = (f_roi.shape[0] // 2) - shift_wr_center[1]
+    expected_y = (f_roi.shape[0] // 2) - shift_wr_center[1] 
     shift_x = center_x - expected_x
     shift_y = center_y - expected_y
     return True,shift_x, shift_y
+
 
 def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2, pre_computed_rois=None):
     if pre_computed_rois:

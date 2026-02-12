@@ -4,12 +4,20 @@ import logging
 import json
 import os
 import io
-from src.utils.json_parsing import get_attributes_by_page
 from time import perf_counter
 import pikepdf
 import fitz
 from PIL import Image
 from PyPDF2 import PdfReader
+import re
+import math
+import cv2
+import pytesseract #for ocr
+pytesseract.pytesseract.tesseract_cmd = r'//vms-e34n-databr/2025-handwriting\programs\tesseract\tesseract.exe'
+
+from src.utils.json_parsing import get_attributes_by_page 
+from src.utils.convert_utils import process_pdf_files
+from src.utils.feature_extraction import preprocess_text_region, preprocess_page
 
 
 
@@ -37,62 +45,29 @@ def parse_args():
     return parser.parse_args()
 
 
+
+
+#experiments on using pytesseract for identifying the id: https://gemini.google.com/share/54f0575cafcb
 def main():
     args = parse_args()
     path_file = "//vms-e34n-databr/2025-handwriting\\data\\test_read_shared_files\\Q5\\A9Y0H8E8\\ISP00JLX_ISP01RGX.tif.pdf"
     path_file = "//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers\\Q5\\ISP00JLX_ISP01RGX.tif.pdf"
     path_file ="//intra.igr.fr/profils$/UserCtx_Data$/A_MORELLI\\Downloads\\ISP00DLO_ISP013FX.tif.pdf"
+    path_file = "//vms-e34n-databr/2025-handwriting\\data\\test_id_retrival\\mixed\\5_4999742_4.pdf"
 
-    print("trying with PyPDF2")
-    # Carica il file
-    reader = PdfReader(path_file)
+    list_of_images = process_pdf_files(-1,[path_file],None,save=False)
+    image = list_of_images[0]
 
-    # Estrae i metadati standard
-    meta = reader.metadata
+    height = image.shape[0]
+    width = image.shape[1]
+    t_1=perf_counter()
+    orb = cv2.ORB_create(nfeatures=2000)
+    patch = preprocess_page(image)
+    kp_unkn, des_unkn = orb.detectAndCompute(patch, None)
+    t_2 = perf_counter()
+    print(t_2-t_1)
 
-    print(f"Autore: {meta.author}")
-    print(f"Creatore: {meta.creator}")
-    print(f"Produttore: {meta.producer}")
-    print(f"Titolo: {meta.title}")
 
-    with pikepdf.open(path_file) as pdf:
-        info = pdf.docinfo
-        print("Metadati Classici:")
-        for key, value in info.items():
-            print(f"{key}: {value}")
-        print("Metadati formato moderno")
-        meta = pdf.open_metadata()
-        # Mostra i metadati in formato dizionario
-        print("1")
-        print(meta)
-        for key, value in meta.items():
-            print(f"{key}: {value}")
-    
-    print("provo a estrarre metadati dall'immagine tif")
-    pdf_file = fitz.open(path_file)
-
-    # Solitamente questi PDF hanno una sola pagina con una sola immagine
-    for page_index in range(len(pdf_file)):
-        page = pdf_file[page_index]
-        image_list = page.get_images(full=True)
-
-        for img_index, img in enumerate(image_list):
-            xref = img[0]
-            base_image = pdf_file.extract_image(xref)
-            image_bytes = base_image["image"]
-            
-            # Carichiamo i byte dell'immagine in Pillow
-            image = Image.open(io.BytesIO(image_bytes))
-            
-            print(f"--- Metadati estratti dall'immagine nella pagina {page_index+1} ---")
-            # Proviamo a leggere i tag (se presenti)
-            if hasattr(image, 'tag_v2'):
-                for tag, value in image.tag_v2.items():
-                    print(f"Tag {tag}: {value}")
-            else:
-                print("L'immagine incorporata non contiene metadati interni.")
-
-        pdf_file.close()
 
     return 0
 

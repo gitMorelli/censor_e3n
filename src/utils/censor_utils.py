@@ -11,7 +11,7 @@ from src.utils.file_utils import get_basename, create_folder, check_name_matchin
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
 
 from src.utils.json_parsing import get_attributes_by_page, get_page_list, get_page_dimensions,get_box_coords_json, get_censor_type
-from src.utils.json_parsing import get_align_boxes, get_text_boxes, get_roi_boxes, get_censor_boxes
+from src.utils.json_parsing import get_align_boxes, get_ocr_boxes, get_roi_boxes, get_censor_boxes
 
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
 from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
@@ -112,6 +112,36 @@ def save_censored_image(img, censor_boxes, save_path,n_p,n_doc,n_page,warning='0
 def generate_warning_string(decision_1,decision_2,test_log,img_id):
     return str(1-int(decision_1))+str(1-int(decision_2)) #true decision becomes 1 which becomes '0' in the warning
 
+
+def get_area(rect):
+    x1, y1, x2, y2 = rect
+    return abs(x2 - x1) * abs(y2 - y1)
+
+def map_to_smallest_containing(list1, list2):
+    """
+    Maps each rect in list2 to the smallest rect in list1 that contains it.
+    Returns a dictionary: {tuple_from_list2: tuple_from_list1_or_None}
+    """
+    mapping = {}
+
+    for r2 in list2:
+        x1b, y1b, x2b, y2b = r2
+        best_match = None
+        min_area = float('inf')
+
+        for r1 in list1:
+            x1a, y1a, x2a, y2a = r1
+            
+            # Check containment
+            if x1a <= x1b and y1a <= y1b and x2a >= x2b and y2a >= y2b:
+                area = get_area(r1)
+                if area < min_area:
+                    min_area = area
+                    best_match = r1
+        
+        mapping[r2] = best_match
+        
+    return mapping
 
 ######### CENSORING SCHEMES ####################
 def censor_page_base(page_dictionary, img_id, root, npy_dict,logger, image_time_logger, save_path, subj_id, doc_ind, 
