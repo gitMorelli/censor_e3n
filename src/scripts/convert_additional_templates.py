@@ -13,8 +13,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_pdf\\100263_template"#additional"#100263_template"
-SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\100263_template"#additional"#100263_template" 
+TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\training_obj_det_model_pdf"#additional"#100263_template"
+SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\training_obj_det_model_png"#additional"#100263_template" 
 
 def parse_args():
     """Handle command-line arguments."""

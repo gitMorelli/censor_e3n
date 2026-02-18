@@ -139,5 +139,35 @@
       },
       "problemMatcher": []
     },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: group_files_by_id (LocalEnv)",
+      "type": "process",
+      "command": "//vms-e34n-databr//2025-handwriting:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      //"label": "Python DEbugger: Censor on gustaveroussy",
+      "label": "Python Debugger: check_ref_Qx_files (LocalEnv)",
+      "type": "process",
+      "command": "//vms-e34n-databr//2025-handwriting:/programs/miniconda3/envs/LocalEnv/python.exe",
+      "args": ["${file}"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    }
   ]
 }
