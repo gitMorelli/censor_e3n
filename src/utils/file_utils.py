@@ -234,7 +234,8 @@ def load_subjects_tree(logger, filled_path):
     return warning_map, filled_folder_names, filled_folders
 
 #i can load all the pre-computed data at once to spare time; since i won't re-open the files every time (shouldn't be intensive on memory) 
-def load_template_info(logger,annotation_files,annotation_file_names,annotation_path, security_check=True, selected_files = None):
+def load_template_info(logger,annotation_files,annotation_file_names,annotation_path, 
+                       security_check=True, selected_files = None):
     if selected_files == None:
         selected_files = [f"q_{i}" for i in range(1,13)]+["q_1v2"]
     annotation_roots=[]

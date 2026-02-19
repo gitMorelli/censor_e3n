@@ -38,7 +38,7 @@ def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_cen
         # If no good match is found, return the original center
         center_x = coord[0] + (coord[2] - coord[0]) // 2
         center_y = coord[1] + (coord[3] - coord[1]) // 2
-        return False,center_x, center_y
+        return False,max_val,center_x, center_y
     # For TM_SQDIFF methods, the best match is min_loc; otherwise, max_loc
     top_left = max_loc
     center_x = top_left[0] + w // 2 
@@ -47,10 +47,10 @@ def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_cen
     expected_y = (f_roi.shape[0] // 2) - shift_wr_center[1] 
     shift_x = center_x - expected_x
     shift_y = center_y - expected_y
-    return True,shift_x, shift_y
+    return True,max_val,shift_x, shift_y
 
 
-def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2, pre_computed_rois=None):
+def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2,matching_threshold=0.7, pre_computed_rois=None,return_confidences=False):
     if pre_computed_rois:
         pre_computed=True
     else:
@@ -60,6 +60,7 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
     shifts = []
     centers = []
     processed_rois=[]
+    confidences=[]
     for i,coord in enumerate(rois):
         center_x, center_y = get_center(coord)
         new_coord = enlarge_crop_coords(coord, scale_factor=scale_factor, img_shape=img_shape)
@@ -71,11 +72,14 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
             f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
         else:
             f_roi = pre_computed_rois[i]
-        is_matched,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,shift_wr_center=shift_wr_center)
+        is_matched,max_val,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,shift_wr_center=shift_wr_center,threshold=matching_threshold)
+        confidences.append(max_val)
         if is_matched: #only include regions for which you have a match
             shifts.append((shift_x, shift_y))
             centers.append((center_x, center_y))
         processed_rois.append(f_roi)
+    if return_confidences:
+        return shifts, centers,processed_rois,confidences
     return shifts, centers,processed_rois
 
 def compute_distance(c1,c2):

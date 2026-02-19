@@ -38,23 +38,44 @@ def check_matching_correspondence(page_dict, pages_list):
 def hamming_distance(hash1: np.ndarray, hash2: np.ndarray) -> int:
     return int(np.count_nonzero(hash1 ^ hash2))
 
-def match_pages_phash(page_dict, template_dict, pages_list, templates_to_consider, gap_threshold=5, max_dist=18):
-    #assume phash are already computed
+def match_pages_phash(page_dict, template_dict, pages_list, templates_to_consider, 
+                      gap_threshold=5, max_dist=18, compute_report = False): #i define this function to avoid breaking old code 
+    return match_pages(page_dict, template_dict, pages_list, templates_to_consider, 
+                      gap_threshold=gap_threshold, max_dist=max_dist, compute_report = compute_report,type="phash")
 
+def match_pages(page_dict, template_dict, pages_list, templates_to_consider, 
+                      gap_threshold=5, max_dist=18,orb_good_match=50, compute_report = False,type="phash"):
+    if type=="phash":
+        key_value = 'page_phash'
+    elif type=="orb":
+        key_value = 'orb'
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+
+    #assume phash are already computed
     hashes_pages = []
     hashes_templates = []
 
     #length of pages and templates may be different if templates only has the ones to censor
     for img_id in pages_list:
-        hashes_pages.append(page_dict[img_id]['page_phash'])
+        hashes_pages.append(page_dict[img_id][key_value])
     for t_id in templates_to_consider:
-        hashes_templates.append(template_dict[t_id]['page_phash'])
+        hashes_templates.append(template_dict[t_id][key_value])
 
     # Cost matrix: Hamming distances
     cost = np.zeros((len(hashes_pages), len(hashes_templates)), dtype=np.int32)
     for i in range(len(hashes_pages)):
         for j in range(len(hashes_templates)):
-            cost[i, j] = hamming_distance(hashes_pages[i], hashes_templates[j])
+            if type=="phash":
+                cost[i, j] = hamming_distance(hashes_pages[i], hashes_templates[j])
+            else:
+                # Match descriptors
+                matches = bf.match(hashes_pages[i], hashes_templates[j])
+                # Sort matches by distance (lower distance = better match)
+                matches = sorted(matches, key=lambda x: x.distance)
+                # Count "good" matches (those with a distance below a threshold)
+                good_matches = [m for m in matches if m.distance < orb_good_match]
+                cost[i, j] = -len(good_matches) #the more good matches the better, but the Hungarian algorithm minimizes the cost, so I can take the negative of this value
+
 
     # Hungarian assignment (minimize total cost)
     assignement = linear_sum_assignment(cost)
@@ -73,17 +94,16 @@ def match_pages_phash(page_dict, template_dict, pages_list, templates_to_conside
             "hamming": int(cost[i, j]),
         })
     
-    #confident,report = assignment_confidence_phash(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
+    if compute_report:
+        report = assignment_report(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
 
-    matches_sorted = sorted(matches, key=lambda x: x["page_index"])
+        matches_sorted = sorted(matches, key=lambda x: x["page_index"])
 
-    return matches_sorted, cost #, confident, report
+        return matches_sorted, cost, report
+    else:
+        matches_sorted = sorted(matches, key=lambda x: x["page_index"])
 
-def update_phash_matches(matches_sorted,page_dict):
-    for match in matches_sorted:
-        img_id = match['page_index']
-        page_dict[img_id]['match_phash']=match['template_index']
-    return page_dict
+    return matches_sorted, cost 
 
 
 def hungarian_min_cost(cost: np.ndarray):
@@ -91,55 +111,72 @@ def hungarian_min_cost(cost: np.ndarray):
     return list(zip(r.tolist(), c.tolist()))
 
 
-def assignment_confidence_phash(cost: np.ndarray, assignment, gap_threshold: int, max_dist: int):
+#can be used also for other types of matching, just need to change the thresholds
+def assignment_report(cost: np.ndarray, assignment, gap_threshold: int, max_dist: int):
     """
     Returns (is_confident, report_dict).
     Confidence logic:
+      - Only evaluates rows that were actually matched.
       - per-row gap test: (2nd best - best) >= gap_threshold
       - matched distance <= max_dist
     """
-    n = cost.shape[0]
     row_ind, col_ind = assignment
+    # Create a mapping only for matched rows to avoid KeyErrors
     row_to_col = {r: c for r, c in zip(row_ind, col_ind)}
-
+    
     per_row = []
-    confident = True
+    all_rows_confident = True
 
-    for r in range(n):
+    # Iterate ONLY over the matched row indices
+    for r in row_ind:
         row = cost[r].astype(int)
-        best = int(row.min())
-        # second best: take smallest two
-        sorted_vals = np.partition(row, 1)[:2]
-        second = int(sorted_vals[1]) if len(sorted_vals) > 1 else 10**9
-        gap = second - best
+        
+        # 1. Calculate best and second best in the row
+        if row.size >= 2:
+            # partition(1) puts the 2 smallest at indices 0 and 1
+            sorted_vals = np.partition(row, 1)
+            best_in_row = int(sorted_vals[0])
+            second_best = int(sorted_vals[1])
+        else:
+            best_in_row = int(row[0])
+            second_best = 10**9 # Infinity if only one template exists
 
+        gap = second_best - best_in_row
+
+        # 2. Check the actually chosen value (from Hungarian matching)
         chosen_c = row_to_col[r]
-        chosen = int(cost[r, chosen_c])
+        chosen_val = int(cost[r, chosen_c])
 
-        row_ok = (gap >= gap_threshold) and (chosen <= max_dist)
+        # 3. Confidence Logic
+        # A match is confident if it's close enough AND significantly better than the runner-up
+        row_ok = (gap >= gap_threshold) and (chosen_val <= max_dist)
+        
         if not row_ok:
-            confident = False
+            all_rows_confident = False
 
         per_row.append({
-            "row": r,
-            "best": best,
-            "second": second,
+            "row": int(r),
+            "best_possible": best_in_row,
+            "second_best": second_best,
             "gap": gap,
-            "chosen": chosen,
+            "chosen_val": chosen_val,
             "ok": row_ok
         })
 
-    total = int(sum(cost[r, c] for r, c in zip(row_ind, col_ind)))
-    avg = float(total) / float(n)
+    # Summary Stats
+    total_cost = int(sum(cost[r, c] for r, c in zip(row_ind, col_ind)))
+    num_matches = len(row_ind)
+    avg_cost = float(total_cost) / num_matches if num_matches > 0 else 0
 
     report = {
-        "total_cost": total,
-        "avg_cost": avg,
-        "gap_threshold": gap_threshold,
-        "max_dist": max_dist,
+        "is_confident": all_rows_confident,
+        "total_cost": total_cost,
+        "avg_cost": avg_cost,
+        "num_matches": num_matches,
         "per_row": per_row,
     }
-    return confident, report
+    
+    return report
 
 ############     ################
 ############ OCR ################
@@ -223,7 +260,7 @@ def compare_pages_same_section(raw1, raw2):
         "similarity_containment": containment_similarity(n1, n2),
     }
 
-def match_pages_text(pages_list,templates_to_consider,similarity):
+def match_pages_text(pages_list,templates_to_consider,similarity, compute_report=False, gap_threshold=0.1, max_dist=0.2):
     #assume phash are already computed
     cost = similarity*(-1)+1
     # Hungarian assignment (minimize total cost)
@@ -243,12 +280,16 @@ def match_pages_text(pages_list,templates_to_consider,similarity):
             "similarity": int(cost[i, j]),
         })
     
-    # confident,report = assignment_confidence_text(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
-    # decide how to evaluate the confidence
+    if compute_report:
+        report = assignment_report(cost, assignement, gap_threshold=gap_threshold, max_dist=max_dist)
 
-    matches_sorted = sorted(matches, key=lambda x: x["page_index"])
+        matches_sorted = sorted(matches, key=lambda x: x["page_index"])
 
-    return matches_sorted, cost #, confident, report
+        return matches_sorted, cost, report
+    else:
+        matches_sorted = sorted(matches, key=lambda x: x["page_index"])
+
+    return matches_sorted, cost 
 
 def assignment_confidence_text(cost: np.ndarray, assignment, gap_threshold: int, max_dist: int):
     """
@@ -299,34 +340,31 @@ def assignment_confidence_text(cost: np.ndarray, assignment, gap_threshold: int,
     }
     return confident, report
 
-def initialize_sorting_dictionaries(sorted_files, root,mode='cv2',input_from_file=True):
-    ''' this function takes one json annotation file called root (for one template) 
-    takes a list of file_paths and returns the page_dictionary, and template_dictionary (each initialized to the starting values)'''
-    def find_corresponding_file(sorted_files, img_name):
-        index=get_page_number(img_name)
-        if index <= len(sorted_files):
-            return sorted_files[index-1]
-        return None #the sorted files are supposed to be page_1,page_2, .. (they are sorted by number)
+def find_corresponding_file(sorted_files, img_name):
+    index=get_page_number(img_name)
+    if index <= len(sorted_files):
+        return sorted_files[index-1]
+    return None #the sorted files are supposed to be page_1,page_2, .. (they are sorted by number)
 
-    pages_in_annotation = get_page_list(root)
+def initialize_page_dictionary(sorted_files,input_from_file=True):
     page_dictionary = {}
-    template_dictionary = {}
     for i,file in enumerate(sorted_files):
-        page_dictionary[p]={}   
-    for p in pages_in_annotation:
-        template_dictionary[p]={}
-    #iterate on the pages in a document and initialize their parameters
+        page_dictionary[i+1]={}  
     for i,file in enumerate(sorted_files):
+        img_id=i+1
         page_dictionary[img_id]['img_id']=i+1
         img_name=f'page_{img_id}.png'
         page_dictionary[img_id]['img_name']=img_name 
         if input_from_file:
             png_img_path = find_corresponding_file(sorted_files, img_name)
             page_dictionary[img_id]['img_path']=png_img_path
+            page_dictionary[img_id]['img']=None #i willload is needed to not waste time
         else:
             page_dictionary[img_id]['img_path']=None
             page_dictionary[img_id]['img']=file.copy() #the images are already loaded, i put them in the dictionary
         page_dictionary[img_id]['img_size']=None 
+
+        #template matching properties
         page_dictionary[img_id]['template_matches']=0 #how many time this page was matched with a template
         page_dictionary[img_id]['shifts']=None #(shift_x,shift_y) for first qnd second region
         page_dictionary[img_id]['centers']=None #(shift_x,shift_y) for first qnd second region
@@ -334,10 +372,29 @@ def initialize_sorting_dictionaries(sorted_files, root,mode='cv2',input_from_fil
         #for the page (will be overwritten each time i compare with diff template)
         page_dictionary[img_id]['matched_page']=None #initially I assume the page is matched to the same index template
         page_dictionary[img_id]['matched_page_list']=[] #holds the list of all successive matches for the page
+        page_dictionary[img_id]['confidence_template']=None
+
+        #phash properties
         page_dictionary[img_id]['page_phash']=None
         page_dictionary[img_id]['match_phash']=None
+        page_dictionary[img_id]['report_phash']=None
+        #orb properties
+        page_dictionary[img_id]['orb']=None
+        page_dictionary[img_id]['report_orb']=None
+        page_dictionary[img_id]['match_orb']=None
+        #ocr properties
         page_dictionary[img_id]['text']=None
+        page_dictionary[img_id]['match_ocr']=None
+        page_dictionary[img_id]['report_ocr']=None
         # M: there is some redundancy -> rewrite the keys to make it less crowded
+        return page_dictionary
+
+def initialize_template_dictionary(root):
+    pages_in_annotation = get_page_list(root)
+    template_dictionary = {} 
+    for p in pages_in_annotation:
+        template_dictionary[p]={}
+    #iterate on the pages in a document and initialize their parameters
     for img_id in pages_in_annotation:
         censor_type=get_censor_type(root,img_id) 
         template_dictionary[img_id]['type']=censor_type
@@ -350,10 +407,16 @@ def initialize_sorting_dictionaries(sorted_files, root,mode='cv2',input_from_fil
         template_dictionary[img_id]['text_box']=None
         template_dictionary[img_id]['psm']=None
         #template_dictionary[img_id]['text']=None
-        
-    #print(len(templates_to_consider))
-    #perform the check on all the pages to censor or partially censor
-    # i perform both the template matching and the phash check
+    return template_dictionary
+
+def initialize_sorting_dictionaries(sorted_files, root,mode='cv2',input_from_file=True):
+    ''' this function takes one json annotation file called root (for one template) 
+    takes a list of file_paths and returns the page_dictionary, and template_dictionary (each initialized to the starting values)'''
+
+    page_dictionary = initialize_page_dictionary(sorted_files,input_from_file=True)
+
+    template_dictionary = initialize_template_dictionary(root)
+    
     return page_dictionary,template_dictionary
 
 def pre_load_images_to_censor(template_dictionary,page_dictionary, mode='csv'):
@@ -390,6 +453,7 @@ def pre_load_selected_templates(templates_to_consider,npy_dict, root, template_d
         template_dictionary[t_id]['text']=pre_computed_text
         template_dictionary[t_id]['text_box']=text_box
         template_dictionary[t_id]['psm']=psm
+        template_dictionary[t_id]['orb']=pre_computed[-1]['orb_des']
     return template_dictionary
 
 def pre_load_image_properties(pages_to_consider,page_dictionary,template_dictionary,properties=[],mode='csv'):
@@ -408,9 +472,14 @@ def pre_load_image_properties(pages_to_consider,page_dictionary,template_diction
                 preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
                 pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['page_phash'],border_crop_pct=CROP_PATCH_PCTG)
                 page_dictionary[img_id]['page_phash']=pre_comp['page_phash'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
+        if 'orb' in properties: #should follow im loading because it requires the image to be in the dictionary already
+            if page_dictionary[img_id]['orb'] is None:
+                preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
+                pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['orb'])
+                page_dictionary[img_id]['orb']=pre_comp['orb_des'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
     return page_dictionary
 
-def perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, n_align_regions,scale_factor):
+def perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, n_align_regions,scale_factor, matching_threshold=0.7,compute_report=False):
     '''expects a list or a list of pairs, if only a list is provided it means we consider the list of pairs i,i j,j k,k ..
     the first element is the id of a page and the second is the id of the template'''
     if pairs_to_consider and isinstance(pairs_to_consider[0], (int, float)):
@@ -424,9 +493,14 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
         img_id,t_id = pair 
         align_boxes = template_dictionary[t_id]['align_boxes']
         pre_computed_align = template_dictionary[t_id]['pre_computed_align']
-        shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
-                                pre_computed_template=pre_computed_align,scale_factor=scale_factor) #recall this functions returns a shift for each good match
-        #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
+        if compute_report:
+            shifts, centers, processed_rois, report = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
+                                pre_computed_template=pre_computed_align,scale_factor=scale_factor, matching_threshold=matching_threshold, return_confidences=True)
+        else:
+            shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
+                                    pre_computed_template=pre_computed_align,scale_factor=scale_factor, matching_threshold=matching_threshold) #recall this functions returns a shift for each good match
+            #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
+            report = None
         
         if len(shifts)>=n_align_regions:
             page_dictionary[img_id]['shifts'] = shifts
@@ -435,17 +509,39 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
             page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
             page_dictionary[img_id]['matched_page']=t_id
             page_dictionary[img_id]['matched_page_list'].append(t_id)
+            page_dictionary[img_id]['confidence_template'] = report
             template_dictionary[t_id]['matched_to_this']+=1
+ 
     return page_dictionary,template_dictionary
 
 def perform_phash_matching(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
-                            gap_threshold,max_dist):
-    matches_sorted, cost = match_pages_phash(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
-                            gap_threshold=gap_threshold,max_dist=max_dist) #As of now i don't consider the confidence of the matching, but I may in future versions
-    page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+                            gap_threshold,max_dist, compute_report = False):
+    if compute_report:
+        matches_sorted, _,report  = match_pages_phash(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
+                                gap_threshold=gap_threshold,max_dist=max_dist, compute_report=compute_report) #As of now i don't consider the confidence of the matching, but I may in future versions
+        page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+        return page_dictionary, report
+    else:
+        matches_sorted, _ = match_pages_phash(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
+                                gap_threshold=gap_threshold,max_dist=max_dist, compute_report=compute_report) #As of now i don't consider the confidence of the matching, but I may in future versions
+        page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
     return page_dictionary
 
-def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_dictionary,template_dictionary,text_similarity_metric,mode='csv'):
+def perform_orb_matching(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
+                            gap_threshold,max_dist,orb_good_match,compute_report = False):
+    if compute_report:
+        matches_sorted, _,report  = match_pages(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
+                                gap_threshold=gap_threshold,max_dist=max_dist, compute_report=compute_report, orb_good_match = orb_good_match, type = 'orb') #As of now i don't consider the confidence of the matching, but I may in future versions
+        page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+        return page_dictionary, report
+    else:
+        page_dictionary = match_pages(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
+                                gap_threshold=gap_threshold,max_dist=max_dist, compute_report=compute_report, orb_good_match = orb_good_match, type = 'orb') #As of now i don't consider the confidence of the matching, but I may in future versions
+        page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+        return page_dictionary
+
+def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_dictionary,template_dictionary,
+                         text_similarity_metric,mode='csv', compute_report=False, gap_threshold=0.1, max_dist=0.2):
     similarity = np.zeros((len(pages_step_3), len(problematic_templates_step_2)))
     #i need to iterate on all the remaining temlates and on all the remaining pages that are not the final match of a template
     for jj,t_id in enumerate(problematic_templates_step_2):
@@ -458,14 +554,32 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
                 page_text = page_dictionary[img_id]['text']
             similarity[ii,jj] = compare_pages_same_section(page_text, template_dictionary[t_id]['text'])[text_similarity_metric]
     #print(similarity) 
-
-    matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
+    if compute_report:
+        matches_sorted, cost, report = match_pages_text(pages_step_3,problematic_templates_step_2,similarity, 
+                                                                   compute_report=True, gap_threshold=gap_threshold, max_dist=max_dist)
+    else:
+        matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
     for match in matches_sorted:
         img_id = match["page_index"] 
         t_id = match["template_index"]
         template_dictionary[t_id]['final_match']=img_id 
         page_dictionary[img_id]['matched_page']=t_id
+        page_dictionary[img_id]['match_ocr']=t_id
+    if compute_report:
+         return template_dictionary, page_dictionary, report
     return template_dictionary, page_dictionary
+
+def update_phash_matches(matches_sorted,page_dict):
+    for match in matches_sorted:
+        img_id = match['page_index']
+        page_dict[img_id]['match_phash']=match['template_index']
+    return page_dict
+
+def update_orb_matches(matches_sorted,page_dict):
+    for match in matches_sorted:
+        img_id = match['page_index']
+        page_dict[img_id]['match_orb']=match['template_index']
+    return page_dict
 
 def extract_target_numeric(patch, lang, config):
     text = pytesseract.image_to_string(patch,lang = lang, config = config)
