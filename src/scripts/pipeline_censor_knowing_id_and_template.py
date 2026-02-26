@@ -6,25 +6,30 @@ from time import perf_counter
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
+import cv2
 
 from src.utils.convert_utils import process_pdf_files
 #from src.utils.convert_utils import pdf_to_png_images
 from src.utils.file_utils import list_files_with_extension, load_template_info
 from src.utils.file_utils import get_basename, create_folder, remove_folder, load_annotation_tree
 
-from src.utils.json_parsing import get_page_list
+from src.utils.json_parsing import get_page_list, get_roi_boxes
 from src.utils.json_parsing import get_censor_boxes, get_censor_close_boxes
 
-from src.utils.feature_extraction import extract_features_from_page, preprocess_page, extract_features_from_text_region, preprocess_text_region
+from src.utils.feature_extraction import extract_features_from_page, preprocess_page, extract_features_from_text_region, preprocess_text_region, preprocess_blank_roi, censor_image_with_boundary
 
 from src.utils.matching_utils import pre_load_image_properties, initialize_page_dictionary, initialize_template_dictionary
 from src.utils.matching_utils import initialize_sorting_dictionaries, pre_load_selected_templates, perform_template_matching
 from src.utils.matching_utils import perform_phash_matching, perform_ocr_matching, ordering_scheme_base, perform_orb_matching
 
-from src.utils.censor_utils import map_to_smallest_containing
+from src.utils.alignment_utils import compute_misalignment, roi_blank_decision, adjust_boundary_boxes, orb_matching
+
+from src.utils.censor_utils import map_to_smallest_containing, save_as_is_no_censoring, get_transformation_from_dictionaries, apply_transformation_to_boxes, save_censored_image
 
 from src.utils.debug_utils import visualize_templates_w_annotations
 
+from src.utils.logging import FileWriter, initialize_logger
 
 logging.basicConfig( 
     level=logging.INFO,
@@ -37,36 +42,6 @@ CSV_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$
 TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\current_template"#additional"#100263_template"
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
-def parse_args():
-    """Handle command-line arguments."""
-    parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
-    parser.add_argument(
-        "-l", "--pdf_load_path",
-        default=PDF_LOAD_PATH,
-        help="Path to the PDF file to convert",
-    )
-    parser.add_argument(
-        "-c", "--csv_load_path",
-        default=CSV_LOAD_PATH,
-        help="Path to the PDF file to convert",
-    )
-    parser.add_argument(
-        "-t", "--templates_path",
-        default=TEMPLATES_PATH,
-        help="Path to the PDF file to convert",
-    )
-    parser.add_argument(
-        "-s", "--save_path",
-        default=SAVE_PATH,
-        help="Directory to save the converted PNG images",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable debug logging",
-    )
-    return parser.parse_args()
 
 QUESTIONNAIRE = "5"
 N_ALIGN_REGIONS = 2 #minimum number of align boxes needed for matching
@@ -79,6 +54,15 @@ ID_COL = 'e3n_id_hand'
 USED_COL = 'Used'
 ORB_GOOD_MATCH = 50
 MATCHING_THRESHOLD = 0.7
+N_BLACK_THRESH=0.1
+BLANK_REGION_TESTING_THRESHOLD = 1
+EPSILON_EDGE_MATCHING = 2.0
+THICKNESS_PCT = 0.2
+SPACING_MULT = 0.5
+ORB_NFEATURES = 2000
+ORB_top_n_matches = 50
+ORB_match_threshold = 10
+
 
 def main():
     args = parse_args()
@@ -90,6 +74,7 @@ def main():
     pdf_load_path = args.pdf_load_path
     csv_load_path = args.csv_load_path
     save_path = args.save_path
+    save_debug_times=args.save_debug_times
 
     csv_modified_path = os.path.join(save_path,"ref_pdf",f"updated_ref_pdf_Q{QUESTIONNAIRE}.csv")
     if os.path.exists(csv_modified_path)==False: #if the csv has not been preprocessed yet
@@ -137,7 +122,10 @@ def main():
         for p in pages_in_annotation:
             test_log[p]={'failed_test_1': False, 'template_1': None, 'confidences_template_1': None,
                         'failed_test_2': False, 'orb': None, 'template_2': None, 'confidences_template_2': None,
-                        'OCR_WARNING': None, 'OCR': None}
+                        'OCR_WARNING': None, 'OCR': None,
+                        'page_level_warning': None,
+                        'alingement_report': None, 
+                        'roi_and_blank_before' : None, 'roi_and_blank_after' : None}
 
         #i select the annotation root and npy data corresponding to the correct template 
         # #(in Q1 case i have two templates, in the other cases only one so it is straightforward)
@@ -180,7 +168,92 @@ def main():
                 test_log['report_ocr'] = report
         
         # now we censor the pages
+        for img_id in pages_to_consider:
 
+            page = page_dictionary[img_id]
+            matched_id = page['matched_page']
+            template = template_dictionary[matched_id]
+
+            #create time logger for the current page
+            log_path=os.path.join(save_path,'time_logs', f"patient_{unique_id}", QUESTIONNAIRE)
+            create_folder(log_path, parents=True, exist_ok=True)
+            image_time_logger=FileWriter(save_debug_times,
+                                            os.path.join(log_path,f"time_logger_page_{matched_id}.txt"))
+
+            if matched_id == None:
+                test_log[img_id]['page_level_warning'] = "Page not matched with any template page, it will be ignored"
+                continue
+
+            img_size = page['img_size']
+            template_size = template_dictionary[matched_id]['template_size']
+            img=page['img'] #all pages are already loaded
+
+            if page_dictionary[matched_id]['type']=='N':
+                save_as_is_no_censoring(logger,image_time_logger,img_id,page_dictionary,dest_folder=save_path,
+                                        n_p=unique_id,n_doc=QUESTIONNAIRE,n_page=matched_id)
+                continue
+            
+            #I check the extra roi and the blank region and save the results
+            #extra roi
+            pre_computed = npy_dict[matched_id]
+            roi_boxes, pre_computed_rois = get_roi_boxes(root,pre_computed,matched_id) #first one is the extra roi, second one is the blank
+            #prev_values = check_blank_and_extra(roi_boxes, pre_computed_rois, page, img_size) #uncomment if you want to use the roi for template matching and the blank for checking
+            
+            #i get the parameters needed for the alignement of the page
+            scale_factor, shift_x, shift_y, angle_degrees,reference = get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=SCALE_FACTOR_MATCHING)
+            alignement_report = {'scale_factor': scale_factor, 'shift_x': shift_x, 'shift_y': shift_y, 'angle_degrees': angle_degrees}
+
+            # I check that the extra roi i consider is closer and that the blank region is void/voider
+            new_roi_boxes = apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, 
+                                                                shift_x, shift_y, angle_degrees,name='roi') 
+            #new_values = check_blank_and_extra(new_roi_boxes, pre_computed_rois, page, img_size) #uncomment if you want to use the roi for template matching and the blank for checking
+
+
+            # I check alignement on the extra roi with orb matching
+            orb_shift_x, orb_shift_y, orb_scale, orb_angle = orb_matching(img,new_roi_boxes[0],pre_computed_rois[0], top_n_matches=ORB_top_n_matches, 
+                                                                          orb_nfeatures=ORB_NFEATURES , match_threshold=ORB_match_threshold, scale_factor=SCALE_FACTOR_MATCHING)
+            
+            #I increase the size of the close censor regions using the orb transformation parameters and the boundaries of the censor regions
+
+
+            # i save the results in the test log
+            #test_log[img_id]['roi_and_blank_before'] = prev_values
+            #test_log[img_id]['roi_and_blank_after'] = new_values
+            test_log[img_id]['alingement_report'] = alignement_report
+            
+            warning_string = ""
+
+            # I preprocess the censor regions to extend their dimensions to page limits
+            censor_boxes,partial_coverage = get_censor_boxes(root,matched_id) #we need to refer to the correct id of the template
+            censor_close_boxes,_ = get_censor_close_boxes(root,matched_id)
+            censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING) 
+            #should i apply the scale factor  to the page dimension or rescale everything 
+            #together later?
+
+            #i associate each close box with the container box and create an ordered list of the containers that match the censoring boxes
+            map_to_container = map_to_smallest_containing(censor_close_boxes,censor_boxes)
+            boundary_boxes = []
+            for close_box in censor_close_boxes:
+                container_box = map_to_container[close_box]
+                boundary_boxes.append(container_box)
+            #i rescale the dimensions of the censor-close boxes
+            censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
+                                                                shift_x, shift_y, angle_degrees,name='censor_close')
+
+            # I enlarge close-censor regions based on alignement results
+            censor_close_boxes = adjust_close_censor(censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle)
+
+            # apply censoring considering the boundary boxes and the close censor boxes
+            parent_path=os.path.join(save_path, f"patient_{unique_id}", f"document_{QUESTIONNAIRE}")#, f"censored_page_{n_page}.png")
+            create_folder(parent_path, parents=True, exist_ok=True)
+            save_path=os.path.join(parent_path, f"censored_page_w{warning_string}_{matched_id}.png")
+            censored_img = censor_image_with_boundary(img, censor_close_boxes, boundary_boxes, 
+                                                      partial_coverage=partial_coverage,logger=image_time_logger,
+                                                      thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
+            image_time_logger and image_time_logger.call_start(f'writing_to_memory')
+            cv2.imwrite(str(save_path), censored_img)
+            image_time_logger and image_time_logger.call_end(f'writing_to_memory')
+            
 
     logger.info("Conversion finished")
     return 0
@@ -395,6 +468,97 @@ def perform_second_stage_check(pages_to_consider, templates_to_consider, page_di
     
     return test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates
 
+def check_blank_and_extra(roi_boxes, pre_computed_rois, page, img_size):
+    shifts, centers,_,confidences= compute_misalignment(page['img'], roi_boxes[:1], img_size, pre_computed_rois[:1], scale_factor=SCALE_FACTOR_MATCHING,
+                            matching_threshold=MATCHING_THRESHOLD, pre_computed_rois=None,return_confidences=True)
+    #blank region
+    f_roi = preprocess_blank_roi(page['img'], roi_boxes[-1])
+    decision, black_diff_to_template,cc_difference_to_template = roi_blank_decision(f_roi,pre_computed_roi=pre_computed_rois[-1], return_features = True ,
+                                                                                    n_black_thresh=N_BLACK_THRESH,threshold_test=BLANK_REGION_TESTING_THRESHOLD)
+    prev_values = {'shifts': shifts, 'centers': centers, 'confidences': confidences, 
+                    'black_diff_to_template': black_diff_to_template, 'cc_difference_to_template': cc_difference_to_template}
+    return prev_values
+        
+def adjust_close_censor(new_censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle):
+    def transform_box(pts, scale, shift_x, shift_y):
+        #i suppose the box is saved as a polygon: points in clockwise order starting from the top left corner (pt0, pt1, pt2, pt3)
+        # 1. Scaling around the center
+        center = np.mean(pts, axis=0)
+
+        if scale>1:
+            pts = center + (pts - center) * scale
+        
+        # 2. Define Local Axes (Direction vectors)
+        # Unit vector along the 'width' (from pt0 to pt1)
+        v_w = pts[1] - pts[0]
+        dist_w = np.linalg.norm(v_w)
+        u_w = v_w / dist_w
+        
+        # Unit vector along the 'height' (from pt0 to pt3)
+        v_h = pts[3] - pts[0]
+        dist_h = np.linalg.norm(v_h)
+        u_h = v_h / dist_h
+
+        # 3. Apply Shifts
+        # Shift X: Affects 'right' (pts 1,2) or 'left' (pts 0,3)
+        if shift_x > 0:
+            pts[1] += u_w * shift_x
+            pts[2] += u_w * shift_x
+        elif shift_x < 0:
+            pts[0] += u_w * shift_x # shift_x is negative, so it moves 'backwards'
+            pts[3] += u_w * shift_x
+
+        # Shift Y: Affects 'bottom' (pts 2,3) or 'top' (pts 0,1)
+        # Note: Logic depends on if your Y-axis grows 'down' (images) or 'up' (math)
+        if shift_y > 0:
+            pts[2] += u_h * shift_y
+            pts[3] += u_h * shift_y
+        elif shift_y < 0:
+            pts[0] += u_h * shift_y
+            pts[1] += u_h * shift_y
+
+        return pts
+    for i in range(len(new_censor_close_boxes)):
+        new_censor_close_boxes[i] = transform_box(new_censor_close_boxes[i], orb_scale, orb_shift_x, orb_shift_y)
+    
+    return new_censor_close_boxes
+
+def parse_args():
+    """Handle command-line arguments."""
+    parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
+    parser.add_argument(
+        "-l", "--pdf_load_path",
+        default=PDF_LOAD_PATH,
+        help="Path to the PDF file to convert",
+    )
+    parser.add_argument(
+        "-c", "--csv_load_path",
+        default=CSV_LOAD_PATH,
+        help="Path to the PDF file to convert",
+    )
+    parser.add_argument(
+        "-t", "--templates_path",
+        default=TEMPLATES_PATH,
+        help="Path to the PDF file to convert",
+    )
+    parser.add_argument(
+        "-s", "--save_path",
+        default=SAVE_PATH,
+        help="Directory to save the converted PNG images",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable debug logging",
+    )
+
+    parser.add_argument(
+        "--save_debug_times",
+        action="store_true",
+        help="Enlarge censor boxes before applying censorship",
+    )
+    return parser.parse_args()
 
 if __name__ == "__main__":
     main()

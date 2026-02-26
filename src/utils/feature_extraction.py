@@ -538,11 +538,14 @@ def preprocess_roi(img: ModeImage, box, target_size=(128,128), mode: str = "cv2"
     else:
         patch = crop_patch(img, box, mode=mode, verbose=verbose)
     gray_patch = convert_to_grayscale(patch, mode=mode, verbose=verbose)
-    resized_patch, _, _ = resize_patch_to_fixed(gray_patch, target_size, mode=mode, verbose=verbose)
-    return resized_patch
+    if target_size is not None:
+        resized_patch, _, _ = resize_patch_to_fixed(gray_patch, target_size, mode=mode, verbose=verbose)
+        return resized_patch
+    else:
+        return gray_patch
 #function to extract features from crops (rois) (expects preprocessed images)
 def extract_features_from_roi(patch: ModeImage, mode: str = "cv2", 
-                              verbose: bool = False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile']) -> Any:
+                              verbose: bool = False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'],**kwargs) -> Any:
     """Extract features from a grayscale patch. Returns a dict of features."""
     mode = _normalize_mode(mode)
     if verbose:
@@ -559,6 +562,12 @@ def extract_features_from_roi(patch: ModeImage, mode: str = "cv2",
     if 'profile' in to_compute:
         features['profile_h'] = projection_profiles(patch, axis=1)
         features['profile_v'] = projection_profiles(patch, axis=0)
+    if 'orb' in to_compute:
+        nfeatures=kwargs.get('orb_nfeatures',2000)
+        orb = cv2.ORB_create(nfeatures=nfeatures) #the patch should be grayscaled (it is since i expect it also for phash)
+        kp, des = orb.detectAndCompute(patch, None)
+        features['orb_kp']=serialize_keypoints(kp)
+        features['orb_des']=des
 
     if verbose:
         _t1 = perf_counter()
@@ -710,7 +719,8 @@ def fill_polygon_striped_relative(
     # 1. Image and Channel Analysis
     is_color = len(img.shape) == 3
     if not is_color:
-        color = 0 
+        if len(color) == 3:
+            color = color[0] 
     
     # 2. Get Rotated Rectangle Properties
     # rect is a tuple: ((center_x, center_y), (width, height), angle)
@@ -836,6 +846,71 @@ def censor_image(img: ModeImage, roi_boxes, verbose: bool = False, partial_cover
             )
             logger and logger.call_end(f'fill_striped_region')
 
+    if verbose:
+        _t1 = perf_counter()
+        print(f"censor_image: num_rois={len(roi_boxes)} time={( _t1 - _t0 ):0.6f}s")
+    logger and logger.call_end(f'save_censored_image')
+    return censored_img
+
+
+def censor_image_with_boundary(img: ModeImage, roi_boxes, boundary_boxes, verbose: bool = False, partial_coverage=None,logger=None,**kwargs) -> ModeImage:
+    """Censor (blacken) regions in img defined by roi_boxes (list of boxes)"""
+    logger and logger.call_start(f'save_censored_image')
+    if partial_coverage == None:
+        partial_coverage=[False for i in range(len(roi_boxes))]
+    if verbose:
+        _t0 = perf_counter()
+
+    logger and logger.call_start(f'copy_image')
+    censored_img = img.copy()
+    logger and logger.call_end(f'copy_image')
+
+    for i,box in enumerate(roi_boxes):
+        #convert to polygon
+        if is_polygon(box):
+            pts = np.array(box, dtype=np.int32)
+        else:
+            left, top, right, bottom = map(int, box)
+            pts = np.array([
+                [left,  top],
+                [right, top],
+                [right, bottom],
+                [left,  bottom]
+            ], dtype=np.int32)
+
+        #get boundary and create mask
+        x1, y1, x2, y2 = boundary_boxes[i]
+        # 3. Translate the rotated polygon to the AABB's local coordinate system
+        # We subtract the AABB top-left corner (x1, y1)
+        local_poly = pts - [x1, y1]
+
+        # 4. Create a small mask the size of the AABB
+        roi_h, roi_w = (y2 - y1), (x2 - x1)
+        mask_roi = np.zeros((roi_h, roi_w), dtype=np.uint8)
+
+        is_color = len(img.shape) == 3 #true if is rgb
+
+        if partial_coverage[i]==False:
+            logger and logger.call_start(f'fill_region')
+            cv2.fillPoly(mask_roi, [local_poly.astype(np.int32)], 255)
+            logger and logger.call_end(f'fill_region')
+            img_roi = censored_img[y1:y2, x1:x2] #this actually modifies the censored_img since img_roi is a view
+        else:
+            thickness_pct=kwargs.get('thickness_pct',0.1)
+            spacing_mult=kwargs.get('spacing_mult',0.5)
+            logger and logger.call_start(f'fill_striped_region')
+            fill_polygon_striped_relative(
+                mask_roi, pts,
+                thickness_pct=thickness_pct,
+                spacing_mult=spacing_mult,
+                color = 255
+            )
+            img_roi = censored_img[y1:y2, x1:x2] #this actually modifies the censored_img since img_roi is a view
+            logger and logger.call_end(f'fill_striped_region')
+        if not is_color:
+            img_roi[mask_roi == 255] = 0
+        else:
+            img_roi[mask_roi == 255] = (0, 0, 0)
     if verbose:
         _t1 = perf_counter()
         print(f"censor_image: num_rois={len(roi_boxes)} time={( _t1 - _t0 ):0.6f}s")

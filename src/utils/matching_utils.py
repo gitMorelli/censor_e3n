@@ -359,10 +359,12 @@ def initialize_page_dictionary(sorted_files,input_from_file=True):
             png_img_path = find_corresponding_file(sorted_files, img_name)
             page_dictionary[img_id]['img_path']=png_img_path
             page_dictionary[img_id]['img']=None #i willload is needed to not waste time
+            page_dictionary[img_id]['img_size']=None
         else:
             page_dictionary[img_id]['img_path']=None
-            page_dictionary[img_id]['img']=file.copy() #the images are already loaded, i put them in the dictionary
-        page_dictionary[img_id]['img_size']=None 
+            page_dictionary[img_id]['img']=file.copy() #the images are already loaded, i put them in the dictionary 
+            height, width = file.shape[:2] 
+            page_dictionary[img_id]['img_size'] = (width, height)
 
         #template matching properties
         page_dictionary[img_id]['template_matches']=0 #how many time this page was matched with a template
@@ -406,6 +408,7 @@ def initialize_template_dictionary(root):
         template_dictionary[img_id]['text']=None
         template_dictionary[img_id]['text_box']=None
         template_dictionary[img_id]['psm']=None
+        template_dictionary[img_id]['template_size']=None
         #template_dictionary[img_id]['text']=None
     return template_dictionary
 
@@ -454,6 +457,7 @@ def pre_load_selected_templates(templates_to_consider,npy_dict, root, template_d
         template_dictionary[t_id]['text_box']=text_box
         template_dictionary[t_id]['psm']=psm
         template_dictionary[t_id]['orb']=pre_computed[-1]['orb_des']
+        template_dictionary[t_id]['template_size'] = get_page_dimensions(root, t_id)
     return template_dictionary
 
 def pre_load_image_properties(pages_to_consider,page_dictionary,template_dictionary,properties=[],mode='csv'):

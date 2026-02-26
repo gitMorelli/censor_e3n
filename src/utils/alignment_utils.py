@@ -1,8 +1,10 @@
-from src.utils.feature_extraction import preprocess_roi, preprocess_blank_roi,preprocess_alignment_roi
+from src.utils.feature_extraction import preprocess_roi, preprocess_blank_roi,preprocess_alignment_roi, extract_features_from_roi
 from src.utils.feature_extraction import profile_ncc, projection_profiles, edge_iou, ncc, dct_phash,count_black_pixels,count_connected_components
 from src.utils.feature_extraction import phash_hamming_distance, binary_crc32, convert_to_grayscale
+from src.utils.file_utils import deserialize_keypoints
 import cv2  
 import numpy as np
+import math
 from matplotlib.patches import Polygon
 import matplotlib.pyplot as plt
 from src.utils.logging import FileWriter
@@ -81,6 +83,58 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
     if return_confidences:
         return shifts, centers,processed_rois,confidences
     return shifts, centers,processed_rois
+
+
+def orb_matching(img,box,template_properties, top_n_matches=50, orb_nfeatures=2000, match_threshold=10, scale_factor=2):
+
+    img_shape = (img.shape[1], img.shape[0]) # (width, height)  
+    box = enlarge_crop_coords(box, scale_factor=scale_factor, img_shape=img_shape)
+    # preprocess image
+    preprocessed_patch = preprocess_roi(img, box, target_size=None)
+    #compute orb features for the patch
+    pre_comp = extract_features_from_roi(preprocessed_patch,to_compute=['orb'],orb_nfeatures=orb_nfeatures)
+    kps_image , des_image = pre_comp['orb_kp'] , pre_comp['orb_des'] 
+
+    kps_template, des_template = deserialize_keypoints(template_properties['orb_kp']), template_properties['orb_des']
+    orb_kp=deserialize_keypoints(pre_comp[-1]['orb_kp'])
+
+    # 2. Match features
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = sorted(bf.match(des_image, des_template), key=lambda x: x.distance)
+
+    # Use only the top 50 matches for stability
+    good_matches = matches[:top_n_matches]
+
+    if len(good_matches) > match_threshold:
+        # Extract coordinates of matched points
+        image_pts = np.float32([kps_image[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        template_pts = np.float32([kps_template[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2) 
+
+        # 3. Find the Homography Matrix
+        M, mask = cv2.findHomography(template_pts, image_pts, cv2.RANSAC, 5.0) #the template is transformed to the image
+        #-> the scale, rotation and shift will be the parameters that bring from the template to the image
+
+        # 4. Extract Info from Matrix M
+        # M = [ [a, b, tx],
+        #       [c, d, ty],
+        #       [0, 0, 1 ] ]
+        
+        # Shift (Translation)
+        shift_x = M[0, 2]
+        shift_y = M[1, 2]
+
+        # Scale
+        # Derived from the change in length of the basis vectors
+        scale_x = math.sqrt(M[0, 0]**2 + M[1, 0]**2)
+        scale_y = math.sqrt(M[0, 1]**2 + M[1, 1]**2)
+        avg_scale = (scale_x + scale_y) / 2
+
+        # Rotation Angle (in degrees)
+        angle = math.atan2(M[1, 0], M[0, 0]) * (180 / math.pi)
+
+        return shift_x, shift_y, avg_scale, angle
+    else:
+        return None, None, None  # Not enough matches to compute transformation
 
 def compute_distance(c1,c2):
     return np.sqrt((c2[0] - c1[0]) ** 2 + (c2[1] - c1[1]) ** 2)
@@ -272,6 +326,35 @@ def plot_both_rois_on_image(image, rois_1, rois_2, save_path,
     plt.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
+
+def adjust_boundary_boxes(boxes, img_size_1, img_size_2, epsilon=2.0):
+    """
+    Adjusts box edges that coincide with img_size_1 boundaries 
+    to match img_size_2 boundaries, without scaling internal coordinates.
+    """
+    w1, h1 = img_size_1
+    w2, h2 = img_size_2
+    
+    # Convert to numpy array for vectorized operations
+    boxes = np.array(boxes, dtype=float)
+    
+    # X-coordinates: Xtl (index 0) and Xbr (index 2)
+    for i in [0, 2]:
+        # If it was at/near the left edge (0), keep it at 0
+        boxes[boxes[:, i] <= epsilon, i] = 0
+        
+        # If it was at/near the old right edge (w1), move it to the new right edge (w2)
+        boxes[boxes[:, i] >= (w1 - epsilon), i] = w2
+
+    # Y-coordinates: Ytl (index 1) and Ybr (index 3)
+    for i in [1, 3]:
+        # If it was at/near the top edge (0), keep it at 0
+        boxes[boxes[:, i] <= epsilon, i] = 0
+        
+        # If it was at/near the old bottom edge (h1), move it to the new bottom edge (h2)
+        boxes[boxes[:, i] >= (h1 - epsilon), i] = h2
+        
+    return boxes.tolist()
 ######### CHECK FOR ALIGNMENT using ROIs #########
 # -----------------------------
 # Decision logic per ROI
@@ -359,7 +442,7 @@ def roi_decision(f_roi,phash_hamm_thresh=8,
         return True
     return False
 
-def roi_blank_decision(f_roi, n_black_thresh=0.1,
+def roi_blank_decision(f_roi, n_black_thresh=0.1, return_features = False,
                        t_roi=None,pre_computed_roi=None,to_compute=['cc','n_black'],threshold_test=1):
     ok_tests = 0
     if pre_computed_roi:
@@ -374,19 +457,30 @@ def roi_blank_decision(f_roi, n_black_thresh=0.1,
             t_n_black = count_black_pixels(t_roi)
         f_n_black = count_black_pixels(f_roi)
         
-        if np.abs(f_n_black-t_n_black)/(t_n_black+1e-10) <= n_black_thresh:
+        black_diff_to_template = (f_n_black-t_n_black)/(t_n_black+1e-10)
+
+        if np.abs(black_diff_to_template) <= n_black_thresh:
             ok_tests += 1
+    else:
+        black_diff_to_template = None
     if 'cc' in to_compute:
         if pre_computed:
             t_cc = pre_computed_roi['cc']
         else:
             t_cc = count_connected_components(t_roi)
         f_cc = count_connected_components(f_roi)
-        if f_cc == t_cc:
+        cc_difference_to_template= f_cc-t_cc
+        if cc_difference_to_template == 0:
             ok_tests += 1
+    else:
+        cc_difference_to_template=None
+    tests_ok=False
     if ok_tests >= threshold_test:
-        return True
-    return False
+        tests_ok=True
+    if return_features:
+        return tests_ok,black_diff_to_template,cc_difference_to_template
+    else:
+        return tests_ok
 # -----------------------------
 # Page-level voting
 # -----------------------------

@@ -34,17 +34,21 @@ def save_as_is_no_censoring(logger,image_time_logger,img_id,page_dictionary,dest
     page=page_dictionary[img_id]
     img_name = page['img_name']
     img_size = page['img_size']
+    img = page['img']
     png_img_path = page['img_path']
 
     logger.debug("Skip image: id=%s, name=%s, size=%s, no censor regions", img_id, img_name, img_size)
     image_time_logger.call_start('copy_image')
 
     # Build the destination file path
-    dest_path = os.path.join(dest_folder, f"patient_{n_p}", f"document_{n_doc}")
+    dest_path = os.path.join(dest_folder, str(n_p), str(n_doc))
     create_folder(dest_path, parents=True, exist_ok=True)
-    save_path=os.path.join(dest_path, f"censored_page_w00_{n_page}.png")
+    save_path=os.path.join(dest_path, f"page_{n_page}.png")
 
-    shutil.copy2(png_img_path, save_path)  # copy2 preserves metadata
+    if img:
+        cv2.imwrite(save_path, img)
+    else:
+        shutil.copy2(png_img_path, save_path)  # copy2 preserves metadata
     image_time_logger.call_end('copy_image')
 
 def save_original_w_boxes(align_boxes, roi_boxes,censor_boxes,source,subj_id,img_id,img,doc_ind):
@@ -72,6 +76,21 @@ def get_transformation_to_match_to_template(page, root, pre_computed, img, img_s
     if page['shifts']==None:
         shifts, centers = compute_misalignment(img, align_boxes, img_size,pre_computed_template=pre_computed_align,
                                             scale_factor=2,pre_computed_rois=None)
+    else:
+        shifts , centers = page['shifts'], page['centers']
+    image_time_logger.call_end('compute_misalignement')
+
+    image_time_logger.call_start('compute_transformation')
+    scale_factor, shift_x, shift_y, angle_degrees,reference = compute_transformation(shifts, centers)
+    image_time_logger.call_end('compute_transformation')
+    return scale_factor, shift_x, shift_y, angle_degrees,reference
+
+def get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=2):
+
+    image_time_logger.call_start('compute_misalignement')
+    if page['shifts']==None: #means that the page was not matched correctly during template matching during reordering
+        shifts, centers = compute_misalignment(page['img'], template['align_boxes'], page['img_size'],pre_computed_template=template['pre_computed_align'],
+                                            scale_factor=scale_factor,pre_computed_rois=None)
     else:
         shifts , centers = page['shifts'], page['centers']
     image_time_logger.call_end('compute_misalignement')
@@ -143,6 +162,8 @@ def map_to_smallest_containing(list1, list2):
         
     return mapping
 
+
+
 ######### CENSORING SCHEMES ####################
 def censor_page_base(page_dictionary, img_id, root, npy_dict,logger, image_time_logger, save_path, subj_id, doc_ind, 
                      skip_checking_1, skip_checking_2, save_debug_images, skip_aligning,enlarge_censor_boxes, 
@@ -207,7 +228,7 @@ def censor_page_base(page_dictionary, img_id, root, npy_dict,logger, image_time_
             image_time_logger.call_end('alignement_and_check',block=True)
         
         if decision_1:
-            decision_2 = True
+            decision_2 = True 
 
         image_time_logger.call_start('censoring',block=True)
         # increase size of censor boxes // I should increase based on how sure i am of the alignement -> 
