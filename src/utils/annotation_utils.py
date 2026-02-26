@@ -51,11 +51,11 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
         elif box['sub_attribute']=='standard' and box['label']=='roi':
             patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_roi(patch, mode=mode, 
-                                                verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
+                                                verbose=False,to_compute=['orb'])
         elif box['sub_attribute']=='text' and box['label']=='roi': #i may extract differen features for this wrt to standard roi
             patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_roi(patch, mode=mode, 
-                                                verbose=False,to_compute=['crc32','dct_phash', 'ncc','edge_iou','profile'])
+                                                verbose=False,to_compute=['orb'])
         elif box['sub_attribute']=='ocr':
             patch = preprocess_text_region(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_text_region(patch, mode=mode, 

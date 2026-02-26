@@ -22,8 +22,9 @@ class FileWriter:
     def write(self, text: str):
         if not self.enabled:
             return
+        content = str(text)
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(text + "\n")
+            f.write(content + "\n")
 
 def initialize_logger(verbose,logger):
     if verbose:

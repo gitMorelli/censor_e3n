@@ -39,11 +39,11 @@ logger = logging.getLogger(__name__)
 
 PDF_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers"#additional"#100263_template"
 CSV_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\ref_pdf_Qx"#additional"#100263_template"
-TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\current_template"#additional"#100263_template"
+TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_template"#additional"#100263_template"
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
 
-QUESTIONNAIRE = "5"
+QUESTIONNAIRE = "1"
 N_ALIGN_REGIONS = 2 #minimum number of align boxes needed for matching
 SCALE_FACTOR_MATCHING = 2 
 GAP_THRESHOLD_PHASH = 5
@@ -66,9 +66,6 @@ ORB_match_threshold = 10
 
 def main():
     args = parse_args()
-    if args.verbose:
-        logger.setLevel(logging.DEBUG)
-        logging.getLogger().setLevel(logging.DEBUG)
 
     templates_path = args.templates_path
     pdf_load_path = args.pdf_load_path
@@ -76,38 +73,74 @@ def main():
     save_path = args.save_path
     save_debug_times=args.save_debug_times
 
-    csv_modified_path = os.path.join(save_path,"ref_pdf",f"updated_ref_pdf_Q{QUESTIONNAIRE}.csv")
+    updated_csv_paths = os.path.join(save_path,"ref_pdf")
+    log_path=os.path.join(save_path,'logs')
+    debug_images_path=os.path.join(save_path,'debug_images')
+    questionnairres_log_path=os.path.join(pdf_load_path, f"Q{QUESTIONNAIRE}")
+
+    #i clean the folders from previous results
+    if args.delete_previous_results:
+        if os.path.exists(updated_csv_paths):
+            remove_folder(updated_csv_paths)
+        if os.path.exists(log_path):
+            remove_folder(log_path)
+        if os.path.exists(debug_images_path):
+            remove_folder(debug_images_path)
+    
+    if args.verbose:
+        #console logger
+        logger.setLevel(logging.DEBUG)
+        logging.getLogger().setLevel(logging.DEBUG)
+        #file logger
+        create_folder(log_path, parents=True, exist_ok=True)
+        file_logger=FileWriter(enabled=True,path=os.path.join(log_path,f"global_logger.txt"))
+        # create folder to save debug images
+        create_folder(debug_images_path, parents=True, exist_ok=True)
+
+    csv_modified_path = os.path.join(updated_csv_paths,f"updated_ref_pdf_Q{QUESTIONNAIRE}.csv")
     if os.path.exists(csv_modified_path)==False: #if the csv has not been preprocessed yet
-        df = preprocess_df(csv_load_path,FILENAME_COL, ID_COL,USED_COL)
+        df = preprocess_df(os.path.join(csv_load_path,f"ref_pdf_Q{QUESTIONNAIRE}.csv"),FILENAME_COL, ID_COL,USED_COL)
+        create_folder(updated_csv_paths, parents=True, exist_ok=True)
         df.to_csv(csv_modified_path)
     
-    load_preprocessed_df(csv_modified_path,used_col_name=USED_COL,id_col_name=ID_COL) #load the preprocessed df
+    df = load_preprocessed_df(csv_modified_path,used_col_name=USED_COL,id_col_name=ID_COL) #load the preprocessed df
+
+    file_logger.write(df.head(10).to_string()) #log the first 10 lines of the df to check it is correct
 
     #load the annotation files (full paths and names)
-    annotation_file_names, annotation_files = load_annotation_tree(logger, templates_path)
+    annotation_file_names, annotation_files = load_annotation_tree(file_logger, templates_path)
     #i select only the template of interest (eg for Q5 only doc_5.json)
     selected_templates = select_specific_annotation_file(QUESTIONNAIRE)
 
+    file_logger.write(selected_templates)
+
     # I open the jsons for the selected templates and save them in a list, i also open the corresponding pre_computed data
     # #this list is a single element for QX X>1 and two elements for X=1 
-    annotation_roots, npy_data = load_template_info(logger,annotation_files,annotation_file_names,
+    annotation_roots, npy_data = load_template_info(file_logger,annotation_files,annotation_file_names,
                                                     templates_path, selected_files=selected_templates)
     
     pages_in_annotation = get_page_list(annotation_roots[0]) #is the same for both templates in Q1 case 
     #so i can just take it from the first one
+
+    file_logger.write(pages_in_annotation)
 
     # Group by the 'id' column and iterate over each group
     for unique_id, group in df.groupby(ID_COL):
 
         filenames = group[FILENAME_COL].tolist()
         # i sort the filenames by name (expected page ordering is absed on alphabetical ordering)
-        filenames.sort() 
+        filenames.sort()  # eg ordered as k,l,m,n
         #checks both for .pdf and for .tif.pdf
-        pdf_paths = get_file_paths(filenames,pdf_load_path,logger) 
+        pdf_paths = get_file_paths(filenames,questionnairres_log_path,file_logger) 
+
+        file_logger.write(filenames)
+        #file_logger.write(pdf_paths)
 
         #i extract the images and order them based on the expeected ordering
         #in some cases pdf_paths is a single multipage pdfs in others are multiple one page pdfs files
         list_of_images = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False)
+
+        save_list_of_images(list_of_images, debug_images_path, unique_id, args.verbose)
 
         # I want to find the best match for the 
         # load dictionary to store warning messages on pages
@@ -127,6 +160,7 @@ def main():
                         'alingement_report': None, 
                         'roi_and_blank_before' : None, 'roi_and_blank_after' : None}
 
+        return 0
         #i select the annotation root and npy data corresponding to the correct template 
         # #(in Q1 case i have two templates, in the other cases only one so it is straightforward)
         report,selected_template_index,selected_confidence, root , npy_dict = select_template(QUESTIONNAIRE,annotation_roots,npy_data, list_of_images, logger) 
@@ -212,8 +246,9 @@ def main():
             # I check alignement on the extra roi with orb matching
             orb_shift_x, orb_shift_y, orb_scale, orb_angle = orb_matching(img,new_roi_boxes[0],pre_computed_rois[0], top_n_matches=ORB_top_n_matches, 
                                                                           orb_nfeatures=ORB_NFEATURES , match_threshold=ORB_match_threshold, scale_factor=SCALE_FACTOR_MATCHING)
-            
-            #I increase the size of the close censor regions using the orb transformation parameters and the boundaries of the censor regions
+            orb_match=True
+            if orb_shift_x is None:
+                orb_match=False 
 
 
             # i save the results in the test log
@@ -221,6 +256,7 @@ def main():
             #test_log[img_id]['roi_and_blank_after'] = new_values
             test_log[img_id]['alingement_report'] = alignement_report
             
+            #i compute the warning string to attach to the filename
             warning_string = ""
 
             # I preprocess the censor regions to extend their dimensions to page limits
@@ -230,29 +266,35 @@ def main():
             #should i apply the scale factor  to the page dimension or rescale everything 
             #together later?
 
-            #i associate each close box with the container box and create an ordered list of the containers that match the censoring boxes
-            map_to_container = map_to_smallest_containing(censor_close_boxes,censor_boxes)
-            boundary_boxes = []
-            for close_box in censor_close_boxes:
-                container_box = map_to_container[close_box]
-                boundary_boxes.append(container_box)
-            #i rescale the dimensions of the censor-close boxes
-            censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
-                                                                shift_x, shift_y, angle_degrees,name='censor_close')
+            if orb_match:
+                #i associate each close box with the container box and create an ordered list of the containers that match the censoring boxes
+                map_to_container = map_to_smallest_containing(censor_close_boxes,censor_boxes)
+                boundary_boxes = []
+                for close_box in censor_close_boxes:
+                    container_box = map_to_container[close_box]
+                    boundary_boxes.append(container_box)
+                #i rescale the dimensions of the censor-close boxes
+                censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
+                                                                    shift_x, shift_y, angle_degrees,name='censor_close')
 
-            # I enlarge close-censor regions based on alignement results
-            censor_close_boxes = adjust_close_censor(censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle)
+                # I enlarge close-censor regions based on alignement results
+                censor_close_boxes = adjust_close_censor(censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle)
 
-            # apply censoring considering the boundary boxes and the close censor boxes
-            parent_path=os.path.join(save_path, f"patient_{unique_id}", f"document_{QUESTIONNAIRE}")#, f"censored_page_{n_page}.png")
-            create_folder(parent_path, parents=True, exist_ok=True)
-            save_path=os.path.join(parent_path, f"censored_page_w{warning_string}_{matched_id}.png")
-            censored_img = censor_image_with_boundary(img, censor_close_boxes, boundary_boxes, 
-                                                      partial_coverage=partial_coverage,logger=image_time_logger,
-                                                      thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
-            image_time_logger and image_time_logger.call_start(f'writing_to_memory')
-            cv2.imwrite(str(save_path), censored_img)
-            image_time_logger and image_time_logger.call_end(f'writing_to_memory')
+                # apply censoring considering the boundary boxes and the close censor boxes
+                parent_path=os.path.join(save_path, f"patient_{unique_id}", f"document_{QUESTIONNAIRE}")#, f"censored_page_{n_page}.png")
+                create_folder(parent_path, parents=True, exist_ok=True)
+                save_path=os.path.join(parent_path, f"censored_page_w{warning_string}_{matched_id}.png")
+                censored_img = censor_image_with_boundary(img, censor_close_boxes, boundary_boxes, 
+                                                        partial_coverage=partial_coverage,logger=image_time_logger,
+                                                        thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
+                image_time_logger and image_time_logger.call_start(f'writing_to_memory')
+                cv2.imwrite(str(save_path), censored_img)
+                image_time_logger and image_time_logger.call_end(f'writing_to_memory')
+            else:
+                # i censor considering the large regions
+                save_censored_image(img, censor_boxes, save_path,unique_id,QUESTIONNAIRE,matched_id,
+                                    warning=warning_string,partial_coverage=partial_coverage,
+                                    thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)
             
 
     logger.info("Conversion finished")
@@ -326,7 +368,7 @@ def get_file_paths(filenames,pdf_load_path,logger):
             if os.path.exists(new_path):
                 return new_path
             else:
-                raise FileNotFoundError(f"Neither {path} nor {new_path} exist.")
+                return logger.write(f"Neither {path} nor {new_path} exist.")
 
     for filename in filenames:
         try:
@@ -336,12 +378,12 @@ def get_file_paths(filenames,pdf_load_path,logger):
         except FileNotFoundError as e:
             logger.warning(str(e))
             continue
-
+    return file_paths
 def select_specific_annotation_file(questionnaire):
     #i will select only one annotation file from the library
-    if questionnaire in [f"Q{i}" for i in range(2,14)]:
-        selected_templates = [f"q_{questionnaire.split('Q')[1]}"]
-    elif QUESTIONNAIRE == "Q1":
+    if questionnaire in [f"{i}" for i in range(2,14)]:
+        selected_templates = [f"q_{questionnaire}"]
+    elif questionnaire == "1":
         selected_templates = ["q_1","q_1v2"]
     return selected_templates
 
@@ -523,6 +565,17 @@ def adjust_close_censor(new_censor_close_boxes,orb_shift_x, orb_shift_y, orb_sca
     
     return new_censor_close_boxes
 
+#### Debug ####
+def save_list_of_images(list_of_images, debug_images_path, unique_id, verbose):
+    if not verbose:
+        return 0
+    else:
+        for i in range(len(list_of_images)):
+            #save the images in the debug folder to check they are correctly extracted and ordered
+            debug_img_path = os.path.join(debug_images_path,"original" ,f"patient_{unique_id}_page_{i+1}.png")
+            create_folder(os.path.dirname(debug_img_path), parents=True, exist_ok=True)
+            cv2.imwrite(debug_img_path, list_of_images[i])
+
 def parse_args():
     """Handle command-line arguments."""
     parser = argparse.ArgumentParser(description="Script to convert PDF template pages to PNG images.")
@@ -557,6 +610,13 @@ def parse_args():
         "--save_debug_times",
         action="store_true",
         help="Enlarge censor boxes before applying censorship",
+    )
+
+    parser.add_argument(
+        "-d",
+        "--delete_previous_results",
+        action="store_true",
+        help="Delete the results from the prvious directories to test the pipeline from scratch",
     )
     return parser.parse_args()
 

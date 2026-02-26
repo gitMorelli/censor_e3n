@@ -136,14 +136,14 @@ def check_name_matching(annotation_file_names, template_folder_names, logger):
     if ann_set != tpl_set:
         missing = sorted(list(ann_set - tpl_set))
         extra = sorted(list(tpl_set - ann_set))
-        logger.error("Annotation files and template folders do not match.")
+        logger.write("Annotation files and template folders do not match.")
         if missing:
-            logger.error("Annotations without corresponding template folders: %s", missing)
+            logger.write(f"Annotations without corresponding template folders: {missing}")
         if extra:
-            logger.error("Template folders without corresponding annotations: %s", extra)
+            logger.write(f"Template folders without corresponding annotations: {extra}")
         return 1
 
-    logger.info("Annotation filenames and template folder names match (%d items).", len(ann_set))
+    logger.write(f"Annotation filenames and template folder names match ({len(ann_set)} items).")
 
 def get_page_number(file_name: str) -> int:
     """
@@ -194,12 +194,12 @@ def load_annotation_tree(logger,annotation_path):
     the files are sorted alphabetically (because the function "list_files_with_extension" does it)
     '''
     annotation_files = list_files_with_extension(annotation_path, "json", recursive=False)
-    logger.info("Found %d annotation file(s) in %s", len(annotation_files), annotation_path) 
+    logger.write(f"Found {len(annotation_files)} annotation file(s) in {annotation_path}") 
     if not annotation_files:
-        logger.warning("No annotation files found. Exiting.")
+        logger.write("No annotation files found. Exiting.")
         return 0
 
-    print(annotation_path)
+    #print(annotation_path)
     annotation_file_names = [get_basename(annotation_file, remove_extension=True) for annotation_file in annotation_files]
 
     return annotation_file_names, annotation_files
