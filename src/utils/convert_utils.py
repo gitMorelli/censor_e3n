@@ -88,9 +88,9 @@ def process_pdf_files(n_quest,pdf_files,save_path, save=True, groups = None):
         group_2=  groups[1]
         group_3 = groups[2]
     else:
-        group_1= ["Q1","Q2","Q3","Q5","Q6","Q7","Q9"]#1,2,3,5,6,7,9] #in this group the templates are saved as separate pdf files, each a tiff image
-        group_2=  ["Q8","Q10","Q11","Q12","Q13"] #in this group the templates are saved as single pdf with all the pages
-        group_3 = ["Q4"]
+        group_1= ["1","2","3","5","6","7","9"]#1,2,3,5,6,7,9] #in this group the templates are saved as separate pdf files, each a tiff image
+        group_2=  ["8","10","11","12","13"] #in this group the templates are saved as single pdf with all the pages
+        group_3 = ["4"]
     images_list = []
     if n_quest in group_1:
         #_t0 = perf_counter()
