@@ -74,12 +74,12 @@ def save_w_boxes(save_path,subj_id,doc_ind,matched_id,img,root,pre_computed,logg
         box_colors+=[colors["roi"] for i in range(len(boxes))]
         box_types+=["roi" for i in range(len(boxes))]
     if "censor" in which_boxes:
-        boxes, pre_computed_align = get_censor_boxes(root,pre_computed,matched_id)
+        boxes, pre_computed_align = get_censor_boxes(root,matched_id)
         debug_boxes+=boxes
         box_colors+=[colors["censor"] for i in range(len(boxes))]
         box_types+=["censor" for i in range(len(boxes))]
     if "censor_close" in which_boxes:
-        boxes, pre_computed_align = get_censor_close_boxes(root,pre_computed,matched_id)
+        boxes, pre_computed_align = get_censor_close_boxes(root,matched_id)
         debug_boxes+=boxes
         box_colors+=[colors["censor_close"] for i in range(len(boxes))]
         box_types+=["censor_close" for i in range(len(boxes))]

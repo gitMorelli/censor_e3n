@@ -209,12 +209,12 @@ def load_templates_tree(logger,template_path,annotation_file_names=None):
     also it checks (optionally) that they correspond to the annotation tree'''
     template_folders = list_subfolders(template_path, recursive=False)
     template_folder_names = [get_basename(p, remove_extension=False) for p in template_folders]
-    logger.debug("Template folder names: %s", template_folder_names)
+    logger.write(f"Template folder names: {template_folder_names}")
 
     if annotation_file_names:
         #check that names match
         if check_name_matching(annotation_file_names, template_folder_names, logger) == 1:
-            logger.error("Mismatch between annotation files and template folders. Exiting.")
+            logger.write("Mismatch between annotation files and template folders. Exiting.")
             return 1
         #check that they are sorted in the same way
         assert annotation_file_names == template_folder_names, "Annotation files and template folders are not in the same order."

@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from src.utils.logging import FileWriter
 
 ######### Compute misalignment using ALIGN boxes #########
-def enlarge_crop_coords(coords, scale_factor=1.2, img_shape=None):
+'''def enlarge_crop_coords(coords, scale_factor=1.2, img_shape=None):
     x_min, y_min, x_max, y_max = coords
     width = x_max - x_min
     height = y_max - y_min
@@ -22,7 +22,44 @@ def enlarge_crop_coords(coords, scale_factor=1.2, img_shape=None):
     new_y_min = int(max(center_y - new_height / 2, 0))
     new_x_max = int(min(center_x + new_width / 2, img_shape[0] - 1)) if img_shape else int(center_x + new_width / 2)
     new_y_max = int(min(center_y + new_height / 2, img_shape[1] - 1)) if img_shape else int(center_y + new_height / 2)
+    return (new_x_min, new_y_min, new_x_max, new_y_max)'''
+# this version accounts for tilted rectangles (enlarges the axis aligned rectangle that contains the titled rectangle)
+def enlarge_crop_coords(box, scale_factor, img_shape):
+    # 1. Handle Input Diversity
+    box = np.array(box)
+    
+    if box.ndim == 1 and len(box) == 4:
+        # Standard format: [xtl, ytl, xbr, ybr]
+        x_min, y_min, x_max, y_max = box
+    else:
+        # Polygon format: [[x1, y1], [x2, y2]...] or flattened [x1, y1, x2, y2...]
+        # Reshape to (-1, 2) just in case it's flattened
+        #coords = box.reshape(-1, 2)
+        x_min, y_min = box.min(axis=0)
+        x_max, y_max = box.max(axis=0)
+
+    # 2. Calculate dimensions
+    width = x_max - x_min
+    height = y_max - y_min
+    center_x = x_min + width / 2
+    center_y = y_min + height / 2
+
+    # 3. Apply Scaling
+    new_width = width * scale_factor
+    new_height = height * scale_factor
+
+    # 4. Final Coordinates (Now using scalars, so max() works!)
+    #i am giving x,y as img_shape in input
+    img_w, img_h = img_shape
+    
+    new_x_min = int(max(center_x - new_width / 2, 0))
+    new_y_min = int(max(center_y - new_height / 2, 0))
+    new_x_max = int(min(center_x + new_width / 2, img_w))
+    new_y_max = int(min(center_y + new_height / 2, img_h))
+
     return (new_x_min, new_y_min, new_x_max, new_y_max)
+
+
 def get_center(coords):
     x_min, y_min, x_max, y_max = coords
     center_x = (x_min + x_max) // 2
@@ -88,15 +125,23 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
 def orb_matching(img,box,template_properties, top_n_matches=50, orb_nfeatures=2000, match_threshold=10, scale_factor=2):
 
     img_shape = (img.shape[1], img.shape[0]) # (width, height)  
-    box = enlarge_crop_coords(box, scale_factor=scale_factor, img_shape=img_shape)
+    #print(img_shape)
+
+    #box = enlarge_crop_coords(box, scale_factor=scale_factor, img_shape=img_shape)
+    
     # preprocess image
     preprocessed_patch = preprocess_roi(img, box, target_size=None)
+    # Display the preprocessed patch for debugging or visualization
+    '''plt.imshow(preprocessed_patch, cmap='gray')
+    plt.title("Preprocessed Patch")
+    plt.axis('off')
+    plt.show()'''
+
     #compute orb features for the patch
     pre_comp = extract_features_from_roi(preprocessed_patch,to_compute=['orb'],orb_nfeatures=orb_nfeatures)
-    kps_image , des_image = pre_comp['orb_kp'] , pre_comp['orb_des'] 
+    kps_image , des_image = deserialize_keypoints(pre_comp['orb_kp']) , pre_comp['orb_des'] 
 
     kps_template, des_template = deserialize_keypoints(template_properties['orb_kp']), template_properties['orb_des']
-    orb_kp=deserialize_keypoints(pre_comp[-1]['orb_kp'])
 
     # 2. Match features
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
@@ -134,7 +179,7 @@ def orb_matching(img,box,template_properties, top_n_matches=50, orb_nfeatures=20
 
         return shift_x, shift_y, avg_scale, angle
     else:
-        return None, None, None  # Not enough matches to compute transformation
+        return None, None, None, None  # Not enough matches to compute transformation
 
 def compute_distance(c1,c2):
     return np.sqrt((c2[0] - c1[0]) ** 2 + (c2[1] - c1[1]) ** 2)

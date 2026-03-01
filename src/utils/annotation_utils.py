@@ -7,6 +7,8 @@ import json
 from PIL import Image
 import numpy as np
 
+from matplotlib import pyplot as plt
+
 #from src.utils.convert_utils import pdf_to_png_images
 from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number, load_template_info
 from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder, load_annotation_tree, load_subjects_tree, load_templates_tree
@@ -49,11 +51,15 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
             patch = preprocess_blank_roi(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_blank_roi(patch, mode=mode, verbose=False,to_compute=['cc','n_black'])
         elif box['sub_attribute']=='standard' and box['label']=='roi':
-            patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
+            patch = preprocess_roi(img, box_coords, mode=mode, verbose=False,target_size=None)
+            '''plt.imshow(patch, cmap='gray')
+            plt.title("Preprocessed Patch")
+            plt.axis('off')
+            plt.show()'''
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['orb'])
         elif box['sub_attribute']=='text' and box['label']=='roi': #i may extract differen features for this wrt to standard roi
-            patch = preprocess_roi(img, box_coords, mode=mode, verbose=False)
+            patch = preprocess_roi(img, box_coords, mode=mode, verbose=False, target_size=None)
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['orb'])
         elif box['sub_attribute']=='ocr':
@@ -76,7 +82,7 @@ def precompute_and_store_template_properties(annotation_files, template_folders,
                 return j
     #i can access them by index since they are sorted in the same way
     for i, annotation_file in enumerate(annotation_files):
-        logger.info("Processing file %d/%d: %s", i + 1, len(annotation_files), annotation_file)
+        logger.write(f"Processing file {i + 1}/{len(annotation_files)}: {annotation_file}")
         i_corr = get_corresponding(annotation_file_names[i],template_folder_names)
         doc_path = template_folders[i_corr]
         #pages = list_files_with_extension(doc_path, "png", recursive=False)
@@ -89,11 +95,11 @@ def precompute_and_store_template_properties(annotation_files, template_folders,
 
             img_name=f'page_{img_id}.png'
             img_size = get_page_dimensions(json_data,img_id)
-            logger.debug("Processing image: id=%s, name=%s, size=%s", img_id, img_name, img_size)
+            logger.write(f"Processing image: id={img_id}, name={img_name}, size={img_size}")
             #find the corresponding png image in the template folder
             png_img_path = os.path.join(doc_path, img_name)
             if not os.path.exists(png_img_path):
-                logger.error("PNG image not found for annotation image %s: expected at %s", img_name, png_img_path)
+                logger.write(f"PNG image not found for annotation image {img_name}: expected at {png_img_path}")
                 continue
             #load image with cv2
             img=load_image(png_img_path, mode=mode, verbose=False)

@@ -274,11 +274,8 @@ def main():
             file_logger.write(f"Alignement parameters for page {matched_id}: {alignement_report}") 
             if save_debug_images:
                 save_w_boxes(debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,root,
-                             pre_computed,image_time_logger,which_boxes=['align','transformed'], transformation=transformation)
-            
-            continue
+                             pre_computed,image_time_logger,which_boxes=['align','roi','censor','censor_close','transformed'], transformation=transformation)
 
-            # I check that the extra roi i consider is closer and that the blank region is void/voider
             new_roi_boxes = apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, 
                                                                 shift_x, shift_y, angle_degrees,name='roi') 
             #new_values = check_blank_and_extra(new_roi_boxes, pre_computed_rois, page, img_size) #uncomment if you want to use the roi for template matching and the blank for checking
@@ -290,6 +287,12 @@ def main():
             orb_match=True
             if orb_shift_x is None:
                 orb_match=False 
+
+            #debug
+            file_logger.write(f'''Alignement parameters after orb matching for page {matched_id}: 
+                              shift_x: {orb_shift_x}, shift_y: {orb_shift_y}, scale: {orb_scale}, angle: {orb_angle}''')
+            
+            continue
 
 
             # i save the results in the test log

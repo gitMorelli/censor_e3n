@@ -231,16 +231,16 @@ def get_censor_boxes(root,img_id):
 def get_censor_close_boxes(root,img_id):
     roi_boxes = []
     id_boxes = []
-    partial_coverage=[]
+    
     bb_list=get_attributes_by_page(root, img_id)
     img_size = get_page_dimensions(root,img_id)
 
     i=0
     for box in bb_list:
         box_coords=get_box_coords_json(box,img_size)
-        if box['label'] == "censor-close" and (box['sub_attribute'] == "standard" or box['sub_attribute'] == "not_sure"):
+        if box['label'] == "censor-close":# and (box['sub_attribute'] == "standard" or box['sub_attribute'] == "not_sure"):
             roi_boxes.append(box_coords)
-        elif box['label'] == "censor-close" and box['sub_attribute'] == "identification":
-            id_boxes.append(box_coords)
+        '''elif box['label'] == "censor-close" and box['sub_attribute'] == "identification":
+            id_boxes.append(box_coords)'''
         i+=1
     return roi_boxes, id_boxes

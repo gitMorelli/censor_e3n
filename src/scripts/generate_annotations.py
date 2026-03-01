@@ -8,7 +8,7 @@ from PIL import Image
 import numpy as np
 
 #from src.utils.convert_utils import pdf_to_png_images
-from src.utils.file_utils import load_annotation_tree, load_templates_tree
+from src.utils.file_utils import load_annotation_tree, load_templates_tree, create_folder
 
 #from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
 #from src.utils.xml_parsing import save_xml, iter_images, set_box_attribute,get_box_coords
@@ -66,17 +66,21 @@ def main():
     annotation_path = args.annotation_path 
 
     initialize_logger(args.verbose,logger)
+    
+    log_path = os.path.join(save_path, "logs")
+    create_folder(log_path, parents=True, exist_ok=True)
+    file_logger=FileWriter(enabled=args.verbose,path=os.path.join(log_path,f"global_logger.txt"))
 
     logger.info("Starting PDF -> PNG conversion")
     logger.debug("Input folder: %s", template_path)
     logger.debug("Output folder: %s", save_path)
     logger.debug("Annotation folder: %s", annotation_path)
 
-    annotation_file_names, annotation_files = load_annotation_tree(logger, annotation_path)
+    annotation_file_names, annotation_files = load_annotation_tree(file_logger, annotation_path)
 
-    template_folder_names, template_folders = load_templates_tree(logger,template_path)
+    template_folder_names, template_folders = load_templates_tree(file_logger,template_path)
 
-    precompute_and_store_template_properties(annotation_files, template_folders, logger, save_path, 
+    precompute_and_store_template_properties(annotation_files, template_folders, file_logger, save_path, 
                                              annotation_file_names,template_folder_names,OCR_PSM,CROP_PATCH_PCTG, mode=mode)
 
     logger.info("Conversion finished")
