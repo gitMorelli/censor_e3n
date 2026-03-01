@@ -27,7 +27,7 @@ from src.utils.alignment_utils import compute_misalignment, roi_blank_decision, 
 
 from src.utils.censor_utils import map_to_smallest_containing, save_as_is_no_censoring, get_transformation_from_dictionaries, apply_transformation_to_boxes, save_censored_image
 
-from src.utils.debug_utils import visualize_templates_w_annotations
+from src.utils.debug_utils import visualize_templates_w_annotations, save_w_boxes
 
 from src.utils.logging import FileWriter, initialize_logger
 
@@ -43,7 +43,7 @@ TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_te
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
 
-QUESTIONNAIRE = "1"
+QUESTIONNAIRE = "5"
 N_ALIGN_REGIONS = 2 #minimum number of align boxes needed for matching
 SCALE_FACTOR_MATCHING = 2 
 GAP_THRESHOLD_PHASH = 5
@@ -62,6 +62,7 @@ SPACING_MULT = 0.5
 ORB_NFEATURES = 2000
 ORB_top_n_matches = 50
 ORB_match_threshold = 10
+SAVE_ANNOTATED_TEMPLATES=True
 
 
 def main():
@@ -72,11 +73,17 @@ def main():
     csv_load_path = args.csv_load_path
     save_path = args.save_path
     save_debug_times=args.save_debug_times
+    save_debug_images=args.save_debug_images
 
     updated_csv_paths = os.path.join(save_path,"ref_pdf")
     log_path=os.path.join(save_path,'logs')
     debug_images_path=os.path.join(save_path,'debug_images')
+    debug_images_templates_path=os.path.join(save_path,'debug_images_templates')
+    debug_images_original_path=os.path.join(debug_images_path,'original')
+    debug_images_w_boxes_path=os.path.join(debug_images_path,'original_w_boxes')
     questionnairres_log_path=os.path.join(pdf_load_path, f"Q{QUESTIONNAIRE}")
+    time_logs_path = os.path.join(log_path,'time_logs')
+    results_path = os.path.join(save_path,'results')
 
     #i clean the folders from previous results
     if args.delete_previous_results:
@@ -86,6 +93,8 @@ def main():
             remove_folder(log_path)
         if os.path.exists(debug_images_path):
             remove_folder(debug_images_path)
+        if os.path.exists(results_path):
+            remove_folder(results_path)
     
     if args.verbose:
         #console logger
@@ -140,7 +149,13 @@ def main():
         #in some cases pdf_paths is a single multipage pdfs in others are multiple one page pdfs files
         list_of_images = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False)
 
-        save_list_of_images(list_of_images, debug_images_path, unique_id, args.verbose)
+        #TEST, remove after, disorder the pages
+        new_order=[3,2,1,0]
+        list_of_images = [list_of_images[i] for i in new_order] 
+
+        #DEBUG
+        if save_debug_images:
+            save_list_of_images(list_of_images, debug_images_original_path, unique_id, args.verbose)
 
         # I want to find the best match for the 
         # load dictionary to store warning messages on pages
@@ -160,17 +175,22 @@ def main():
                         'alingement_report': None, 
                         'roi_and_blank_before' : None, 'roi_and_blank_after' : None}
 
-        return 0
+        
         #i select the annotation root and npy data corresponding to the correct template 
         # #(in Q1 case i have two templates, in the other cases only one so it is straightforward)
-        report,selected_template_index,selected_confidence, root , npy_dict = select_template(QUESTIONNAIRE,annotation_roots,npy_data, list_of_images, logger) 
+        report,selected_template_index,selected_confidence, root , npy_dict = select_template(pages_in_annotation,QUESTIONNAIRE,
+        annotation_roots,npy_data, list_of_images, file_logger) 
 
-        if selected_template_index:
+        if report:
             test_log['Choosen template'] = selected_templates[selected_template_index]
             test_log['Confidence on template choice'] = selected_confidence
             test_log['report_phash'] = report
         
+        file_logger.write(selected_templates[selected_template_index])
+        file_logger.write(report)
+        
         #initialize the dictionaries i will use to store info on the sorting process
+        #i should avoid to re-initialize if q1 (but i spare a negligible amount of time)
         page_dictionary,template_dictionary = initialize_sorting_dictionaries(list_of_images, root, input_from_file=False)
         #i will consider all template pages from the beginning and all images of course
         templates_to_consider = pages_in_annotation[:]
@@ -182,8 +202,13 @@ def main():
         
         #check with pages were not matched
         test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates = perform_first_stage_check(pages_to_consider, templates_to_consider, 
-                                                                                                                                         page_dictionary, template_dictionary, test_log)
+                                                                                                                                         page_dictionary, template_dictionary, test_log,
+                                                                                                                                         file_logger)
             
+        file_logger.write(f"problematic pages {problematic_pages}")
+        file_logger.write(f"test passed: {test_passed}")
+
+        
         if not test_passed: 
             #sort with orb matching and check if the association is correct via template matching
             #pre_load orb keypoints for images
@@ -192,6 +217,11 @@ def main():
             test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates = perform_second_stage_check(problematic_pages, problematic_templates, 
                                                                                                                                          page_dictionary, template_dictionary, test_log)
             
+            file_logger.write(f"problematic pages step 2: {problematic_pages}")
+            file_logger.write(f"test passed 2: {test_passed}")
+
+            debug_print_associations(pages_to_consider,page_dictionary,file_logger)
+        
             if not test_passed:
                 #sort with ocr matching 
                 template_dictionary, page_dictionary, report = perform_ocr_matching(problematic_pages,problematic_templates, 
@@ -200,6 +230,8 @@ def main():
                 for img_id in problematic_pages:
                     test_log[img_id]['OCR'] = page_dictionary[img_id]['match_ocr']
                 test_log['report_ocr'] = report
+
+                debug_print_associations(pages_to_consider,page_dictionary,file_logger)
         
         # now we censor the pages
         for img_id in pages_to_consider:
@@ -209,10 +241,10 @@ def main():
             template = template_dictionary[matched_id]
 
             #create time logger for the current page
-            log_path=os.path.join(save_path,'time_logs', f"patient_{unique_id}", QUESTIONNAIRE)
-            create_folder(log_path, parents=True, exist_ok=True)
+            patient_time_log_path=os.path.join(time_logs_path, f"patient_{unique_id}", QUESTIONNAIRE)
+            create_folder(patient_time_log_path, parents=True, exist_ok=True)
             image_time_logger=FileWriter(save_debug_times,
-                                            os.path.join(log_path,f"time_logger_page_{matched_id}.txt"))
+                                            os.path.join(patient_time_log_path,f"time_logger_page_{matched_id}.txt"))
 
             if matched_id == None:
                 test_log[img_id]['page_level_warning'] = "Page not matched with any template page, it will be ignored"
@@ -222,10 +254,10 @@ def main():
             template_size = template_dictionary[matched_id]['template_size']
             img=page['img'] #all pages are already loaded
 
-            if page_dictionary[matched_id]['type']=='N':
-                save_as_is_no_censoring(logger,image_time_logger,img_id,page_dictionary,dest_folder=save_path,
+            if template['type']=='N':
+                file_logger.write(f"Page {img_id} considered as N, no censoring applied, saved as is")
+                save_as_is_no_censoring(file_logger,image_time_logger,img_id,page_dictionary,dest_folder=results_path,
                                         n_p=unique_id,n_doc=QUESTIONNAIRE,n_page=matched_id)
-                continue
             
             #I check the extra roi and the blank region and save the results
             #extra roi
@@ -236,6 +268,15 @@ def main():
             #i get the parameters needed for the alignement of the page
             scale_factor, shift_x, shift_y, angle_degrees,reference = get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=SCALE_FACTOR_MATCHING)
             alignement_report = {'scale_factor': scale_factor, 'shift_x': shift_x, 'shift_y': shift_y, 'angle_degrees': angle_degrees}
+
+            #DEBUG
+            transformation = {'reference': reference, 'scale_factor': scale_factor, 'shift_x': shift_x, 'shift_y': shift_y, 'angle_degrees': angle_degrees}
+            file_logger.write(f"Alignement parameters for page {matched_id}: {alignement_report}") 
+            if save_debug_images:
+                save_w_boxes(debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,root,
+                             pre_computed,image_time_logger,which_boxes=['align','transformed'], transformation=transformation)
+            
+            continue
 
             # I check that the extra roi i consider is closer and that the blank region is void/voider
             new_roi_boxes = apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, 
@@ -295,10 +336,18 @@ def main():
                 save_censored_image(img, censor_boxes, save_path,unique_id,QUESTIONNAIRE,matched_id,
                                     warning=warning_string,partial_coverage=partial_coverage,
                                     thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)
-            
+        return 0    
 
     logger.info("Conversion finished")
     return 0
+
+def debug_print_associations(pages_to_consider,page_dictionary,logger):
+    for img_id in pages_to_consider:
+        page = page_dictionary[img_id]
+        matched_id = page['matched_page']
+        logger.write(f"Page {img_id} is matched with template page {matched_id}")
+    logger.write("-"*50 + "\n")
+    return 
 
 def initialize_result_df(pdf_names,template_type):
     if template_type == "Q10":
@@ -379,6 +428,7 @@ def get_file_paths(filenames,pdf_load_path,logger):
             logger.warning(str(e))
             continue
     return file_paths
+
 def select_specific_annotation_file(questionnaire):
     #i will select only one annotation file from the library
     if questionnaire in [f"{i}" for i in range(2,14)]:
@@ -388,7 +438,7 @@ def select_specific_annotation_file(questionnaire):
     return selected_templates
 
 def select_template(pages_in_annotation,questionnaire,annotation_roots,npy_data, list_of_images, logger):
-    if questionnaire == "Q1":
+    if questionnaire == "1":
         #i have two templates for Q1 so i will select the one that has better matches with the images
         #i will do this by performing a simple phash matching between the images 
         # and the templates and selecting the template with more matches
@@ -419,23 +469,22 @@ def select_template(pages_in_annotation,questionnaire,annotation_roots,npy_data,
                                                             template_dictionary,properties=['phash'])
             
             #perform phash matching
-            page_dictionary, confident, report = perform_phash_matching(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
+            page_dictionary, report = perform_phash_matching(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
                             gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH, compute_report=True)
             total_cost = report['total_cost']
 
             if total_cost < max_cost:
                 selected_template_index = i
                 max_cost = total_cost
-                selected_confidence = confident
-        logger.info(f"Selected template: {annotation_roots[selected_template_index]['filename']} with total cost {max_cost}")
+                selected_confidence = report["is_confident"]
+        logger.write(f"Selected template: {i} with total cost {max_cost}")
         
         return report,selected_template_index,selected_confidence,annotation_roots[selected_template_index],npy_data[selected_template_index]
             
-            
     else:
-        return None,None, None, annotation_roots[0],npy_data[0]
+        return None,0, None, annotation_roots[0],npy_data[0]
 
-def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dictionary, template_dictionary, test_log):
+def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dictionary, template_dictionary, test_log, logger):
     #i test if the pages are already in place
     pairs_to_consider = []
     #i need to prepare the list of pairs to check considering that the extracted pages can be less or more than the pages in the template, 
@@ -457,6 +506,7 @@ def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dic
         img_id = pages_to_consider[i]
         t_id = templates_to_consider[i]
         matched_id_template = page_dictionary[img_id]['matched_page']
+        logger.write(f"Checking page {img_id} against template {t_id}: matched with template {matched_id_template} with confidence {page_dictionary[img_id]['confidence_template']}")
         test_log[img_id]['confidences_template_1'] = page_dictionary[img_id]['confidence_template'] 
         if matched_id_template: #there was match with the expected page -> remove it from the problematic list
             n_matches+=1
@@ -481,7 +531,8 @@ def perform_second_stage_check(pages_to_consider, templates_to_consider, page_di
     #i test if the pages are already in place
     pairs_to_consider = []
     for img_id in pages_to_consider: 
-        orb_matched_id = pages_to_consider[img_id]['match_orb']
+        orb_matched_id = page_dictionary[img_id]['match_orb']
+        #print(orb_matched_id)
         pairs_to_consider.append([img_id,orb_matched_id])
 
     #perform template_matching and update the matching keys in the dictionaries
@@ -492,8 +543,8 @@ def perform_second_stage_check(pages_to_consider, templates_to_consider, page_di
     problematic_templates = templates_to_consider[:]
     n_matches=0
     for i in range(len(pairs_to_consider)):
-        img_id = pairs_to_consider[0]
-        orb_match = pairs_to_consider[1]
+        img_id = pairs_to_consider[i][0]
+        orb_match = pairs_to_consider[i][1]
         matched_id_template = page_dictionary[img_id]['matched_page']
         test_log[img_id]['orb'] = orb_match
         test_log[img_id]['confidences_template_2'] = page_dictionary[img_id]['confidence_template']
@@ -566,13 +617,13 @@ def adjust_close_censor(new_censor_close_boxes,orb_shift_x, orb_shift_y, orb_sca
     return new_censor_close_boxes
 
 #### Debug ####
-def save_list_of_images(list_of_images, debug_images_path, unique_id, verbose):
+def save_list_of_images(list_of_images, debug_images_original, unique_id, verbose):
     if not verbose:
         return 0
     else:
         for i in range(len(list_of_images)):
             #save the images in the debug folder to check they are correctly extracted and ordered
-            debug_img_path = os.path.join(debug_images_path,"original" ,f"patient_{unique_id}_page_{i+1}.png")
+            debug_img_path = os.path.join(debug_images_original ,f"patient_{unique_id}_page_{i+1}.png")
             create_folder(os.path.dirname(debug_img_path), parents=True, exist_ok=True)
             cv2.imwrite(debug_img_path, list_of_images[i])
 
@@ -617,6 +668,13 @@ def parse_args():
         "--delete_previous_results",
         action="store_true",
         help="Delete the results from the prvious directories to test the pipeline from scratch",
+    )
+
+    parser.add_argument(
+        "-i",
+        "--save_debug_images",
+        action="store_true",
+        help="",
     )
     return parser.parse_args()
 

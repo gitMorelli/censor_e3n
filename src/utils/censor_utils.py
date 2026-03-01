@@ -37,7 +37,7 @@ def save_as_is_no_censoring(logger,image_time_logger,img_id,page_dictionary,dest
     img = page['img']
     png_img_path = page['img_path']
 
-    logger.debug("Skip image: id=%s, name=%s, size=%s, no censor regions", img_id, img_name, img_size)
+    logger.write(f"Skip image: id={img_id}, name={img_name}, size={img_size}, no censor regions")
     image_time_logger.call_start('copy_image')
 
     # Build the destination file path
@@ -45,7 +45,7 @@ def save_as_is_no_censoring(logger,image_time_logger,img_id,page_dictionary,dest
     create_folder(dest_path, parents=True, exist_ok=True)
     save_path=os.path.join(dest_path, f"page_{n_page}.png")
 
-    if img:
+    if img is not None:
         cv2.imwrite(save_path, img)
     else:
         shutil.copy2(png_img_path, save_path)  # copy2 preserves metadata

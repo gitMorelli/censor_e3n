@@ -162,7 +162,8 @@
             },
             "args": [
                 "--verbose",
-                "--delete_previous_results"
+                "--delete_previous_results",
+                "--save_debug_images"
             ]
         },
         // --------------------------------------------- TESTS -------------------------------------------------------------

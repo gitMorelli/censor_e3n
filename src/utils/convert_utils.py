@@ -88,13 +88,25 @@ def process_pdf_files(n_quest,pdf_files,save_path, save=True, groups = None):
         group_2=  groups[1]
         group_3 = groups[2]
     else:
-        group_1= ["1","2","3","5","6","7","9"]#1,2,3,5,6,7,9] #in this group the templates are saved as separate pdf files, each a tiff image
+        group_0= ["1","2","3","6","7","9"] #in this group the templates are saved as separate pdf files
+        group_1= ["5"] #in this group the templates are saved as separate pdf files, each a tiff image and the order should be reversed
         group_2=  ["8","10","11","12","13"] #in this group the templates are saved as single pdf with all the pages
         group_3 = ["4"]
     images_list = []
-    if n_quest in group_1:
+    if n_quest in group_0:
         #_t0 = perf_counter()
         for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
+            images_data,doc=extract_images(pdf_file)
+            if save:
+                file_name = get_basename(pdf_file,remove_extension=True)
+                create_folder(save_path, parents=True, exist_ok=True)
+                out_path = os.path.join(save_path, file_name)
+                save_as_is(doc,0,images_data,out_path) #i always have a single image
+            else:
+                images_list.append( save_as_is(doc,0,images_data,None,return_image=True) )
+    elif n_quest in group_1:
+        #_t0 = perf_counter()
+        for i, pdf_file in enumerate(reversed(pdf_files)): #iterate on the pdf files in Q_i
             images_data,doc=extract_images(pdf_file)
             if save:
                 file_name = get_basename(pdf_file,remove_extension=True)

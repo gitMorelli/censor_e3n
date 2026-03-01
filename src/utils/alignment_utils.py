@@ -244,6 +244,35 @@ def plot_rois_on_image(image, rois, save_path, colors=None):
     plt.savefig(save_path, dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.close(fig)
 
+def plot_rois_on_image_stackable(image, rois, colors=None):
+    """
+    Draws ROIs directly onto a copy of the image and returns the modified image.
+    """
+    # Create a copy so we don't overwrite the original image
+    output_image = image.copy()
+    
+    if colors is None:
+        # Default to Red (BGR format)
+        colors = [(0, 0, 255)] * len(rois)
+    elif all(isinstance(c, str) for c in colors):
+        # Quick conversion for basic string colors if needed
+        color_map = {'red': (0, 0, 255), 'green': (0, 255, 0), 'blue': (255, 0, 0)}
+        colors = [color_map.get(c.lower(), (0, 0, 255)) for c in colors]
+
+    for i, coord in enumerate(rois):
+        x_min, y_min, x_max, y_max = map(int, coord)
+        
+        # cv2.rectangle(img, pt1, pt2, color, thickness)
+        cv2.rectangle(
+            output_image, 
+            (x_min, y_min), 
+            (x_max, y_max), 
+            colors[i], 
+            thickness=2
+        )
+
+    return output_image
+
 def plot_rois_on_image_polygons(image, rois, save_path, colors=None):
 
     h, w = image.shape[:2]

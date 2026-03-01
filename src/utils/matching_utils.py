@@ -389,7 +389,7 @@ def initialize_page_dictionary(sorted_files,input_from_file=True):
         page_dictionary[img_id]['match_ocr']=None
         page_dictionary[img_id]['report_ocr']=None
         # M: there is some redundancy -> rewrite the keys to make it less crowded
-        return page_dictionary
+    return page_dictionary
 
 def initialize_template_dictionary(root):
     pages_in_annotation = get_page_list(root)
@@ -416,7 +416,7 @@ def initialize_sorting_dictionaries(sorted_files, root,mode='cv2',input_from_fil
     ''' this function takes one json annotation file called root (for one template) 
     takes a list of file_paths and returns the page_dictionary, and template_dictionary (each initialized to the starting values)'''
 
-    page_dictionary = initialize_page_dictionary(sorted_files,input_from_file=True)
+    page_dictionary = initialize_page_dictionary(sorted_files,input_from_file=input_from_file)
 
     template_dictionary = initialize_template_dictionary(root)
     
@@ -536,16 +536,16 @@ def perform_orb_matching(page_dictionary,template_dictionary, pages_list, templa
     if compute_report:
         matches_sorted, _,report  = match_pages(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
                                 gap_threshold=gap_threshold,max_dist=max_dist, compute_report=compute_report, orb_good_match = orb_good_match, type = 'orb') #As of now i don't consider the confidence of the matching, but I may in future versions
-        page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+        page_dictionary = update_phash_matches(matches_sorted,page_dictionary,type='orb')
         return page_dictionary, report
     else:
         page_dictionary = match_pages(page_dictionary,template_dictionary, pages_list, templates_to_consider, 
                                 gap_threshold=gap_threshold,max_dist=max_dist, compute_report=compute_report, orb_good_match = orb_good_match, type = 'orb') #As of now i don't consider the confidence of the matching, but I may in future versions
-        page_dictionary = update_phash_matches(matches_sorted,page_dictionary)
+        page_dictionary = update_phash_matches(matches_sorted,page_dictionary,type='orb')
         return page_dictionary
 
 def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_dictionary,template_dictionary,
-                         text_similarity_metric,mode='csv', compute_report=False, gap_threshold=0.1, max_dist=0.2):
+                         text_similarity_metric,mode='cv2', compute_report=False, gap_threshold=0.1, max_dist=0.2):
     similarity = np.zeros((len(pages_step_3), len(problematic_templates_step_2)))
     #i need to iterate on all the remaining temlates and on all the remaining pages that are not the final match of a template
     for jj,t_id in enumerate(problematic_templates_step_2):
@@ -573,10 +573,14 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
          return template_dictionary, page_dictionary, report
     return template_dictionary, page_dictionary
 
-def update_phash_matches(matches_sorted,page_dict):
+def update_phash_matches(matches_sorted,page_dict,type='phash'):
+    if type=='phash':
+        key = 'match_phash'
+    elif type=='orb':
+        key = 'match_orb'
     for match in matches_sorted:
         img_id = match['page_index']
-        page_dict[img_id]['match_phash']=match['template_index']
+        page_dict[img_id][key]=match['template_index']
     return page_dict
 
 def update_orb_matches(matches_sorted,page_dict):
