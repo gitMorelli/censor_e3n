@@ -88,10 +88,23 @@ def process_pdf_files(n_quest,pdf_files,save_path, save=True, groups = None):
         group_2=  groups[1]
         group_3 = groups[2]
     else:
-        group_0= ["1","2","3","6","7","9"] #in this group the templates are saved as separate pdf files
-        group_1= ["5"] #in this group the templates are saved as separate pdf files, each a tiff image and the order should be reversed
-        group_2=  ["8","10","11","12","13"] #in this group the templates are saved as single pdf with all the pages
-        group_3 = ["4"]
+        expected_properties ={
+            "1":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"}, #two layouts
+            "2":{"num_pages":8,"order": "random","stored_as":"multi-page"}, #casi visti: often missing pages, p1 e p2 in un file unico chiamato Qx e gli altri in file separati
+            #non ho ancora trovato un pattern
+            "3":{"num_pages":2,"order": "alphabetical","stored_as":"multi-page"}, 
+            "4":{"num_pages":4,"order": "reverse","stored_as":"multi-page"}, #casi: anche presente come singolo pdf con tutte le pagine in ordine inverso (inizia con Qx)
+            "5":{"num_pages":4,"order": "reverse","stored_as":"multi-page"}, #casi: anche presente come singolo pdf con tutte le pagine in ordine inverso (inizia con Qx)
+            "6":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
+            "7":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
+            "8":{"num_pages":32,"order": "alphabetical","stored_as":"single"},# casi: pagine mancanti
+            "9":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
+            "10":{"num_pages":12,"order": "alphabetical","stored_as":"single"},# sia un questionario di 2 pagine con adesione familiari sia uno di 12 (che comprende anche quelle 2)
+            "11":{"num_pages":8,"order": "alphabetical","stored_as":"single"},
+            "12":{"num_pages":12,"order": "alphabetical","stored_as":"single"},
+            "13":{"num_pages":20,"order": "alphabetical","stored_as":"single"},
+
+        }
     images_list = []
     if n_quest in group_0:
         #_t0 = perf_counter()

@@ -25,9 +25,9 @@ from src.utils.matching_utils import perform_phash_matching, perform_ocr_matchin
 
 from src.utils.alignment_utils import compute_misalignment, roi_blank_decision, adjust_boundary_boxes, orb_matching
 
-from src.utils.censor_utils import map_to_smallest_containing, save_as_is_no_censoring, get_transformation_from_dictionaries, apply_transformation_to_boxes, save_censored_image
+from src.utils.censor_utils import map_to_smallest_containing, save_as_is_no_censoring, get_transformation_from_dictionaries, apply_transformation_to_boxes, save_censored_image, map_to_all_containing
 
-from src.utils.debug_utils import visualize_templates_w_annotations, save_w_boxes
+from src.utils.debug_utils import visualize_templates_w_annotations, save_w_boxes, superimpose_images, save_these_boxes
 
 from src.utils.logging import FileWriter, initialize_logger
 
@@ -81,9 +81,13 @@ def main():
     debug_images_templates_path=os.path.join(save_path,'debug_images_templates')
     debug_images_original_path=os.path.join(debug_images_path,'original')
     debug_images_w_boxes_path=os.path.join(debug_images_path,'original_w_boxes')
+    debug_images_superimposed=os.path.join(debug_images_path,'superimposed')
     questionnairres_log_path=os.path.join(pdf_load_path, f"Q{QUESTIONNAIRE}")
     time_logs_path = os.path.join(log_path,'time_logs')
     results_path = os.path.join(save_path,'results')
+    template_images_path = "//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\current_template"
+    censored_images_path = os.path.join(save_path,'censored_images')
+
 
     #i clean the folders from previous results
     if args.delete_previous_results:
@@ -95,6 +99,8 @@ def main():
             remove_folder(debug_images_path)
         if os.path.exists(results_path):
             remove_folder(results_path)
+        if os.path.exists(censored_images_path):
+            remove_folder(censored_images_path)
     
     if args.verbose:
         #console logger
@@ -134,7 +140,11 @@ def main():
     file_logger.write(pages_in_annotation)
 
     # Group by the 'id' column and iterate over each group
+    count=0
     for unique_id, group in df.groupby(ID_COL):
+        count+=1
+        if count == 5:
+            break
 
         filenames = group[FILENAME_COL].tolist()
         # i sort the filenames by name (expected page ordering is absed on alphabetical ordering)
@@ -150,8 +160,8 @@ def main():
         list_of_images = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False)
 
         #TEST, remove after, disorder the pages
-        new_order=[3,2,1,0]
-        list_of_images = [list_of_images[i] for i in new_order] 
+        #new_order=[3,2,1,0]
+        #list_of_images = [list_of_images[i] for i in new_order] 
 
         #DEBUG
         if save_debug_images:
@@ -287,12 +297,24 @@ def main():
             orb_match=True
             if orb_shift_x is None:
                 orb_match=False 
+            file_logger.write(f"Alignement parameters after orb matching for page {matched_id}: shift_x: {orb_shift_x}, shift_y: {orb_shift_y}, Match: {orb_match}")
+            
+            '''# i check alignement with template matching
+            check_shifts, check_centers,_,check_confidences= compute_misalignment(img, new_roi_boxes[:1], img_size, pre_computed_rois[:1], scale_factor=SCALE_FACTOR_MATCHING,
+                            matching_threshold=MATCHING_THRESHOLD, pre_computed_rois=None,return_confidences=True)
+            check_match=True
+            if len(check_shifts) < 1:
+                check_match=False
+            file_logger.write(f"Alignement parameters after orb matching for page {matched_id}: 
+                              shift_x: {check_shifts[0][0]}, shift_y: {check_shifts[0][1]}, Match: {check_match}")
+                              '''
 
             #debug
-            file_logger.write(f'''Alignement parameters after orb matching for page {matched_id}: 
-                              shift_x: {orb_shift_x}, shift_y: {orb_shift_y}, scale: {orb_scale}, angle: {orb_angle}''')
-            
-            continue
+            if save_debug_images:
+                img2_path = os.path.join(template_images_path, f"q_{QUESTIONNAIRE}",f"page_{matched_id}.png")
+                output_path = os.path.join(debug_images_superimposed, unique_id, f"q_{QUESTIONNAIRE}", f"page_{matched_id}_superimposed.png")
+                create_folder(os.path.dirname(output_path), parents=True, exist_ok=True)
+                superimpose_images(img, img2_path, output_path,file_logger)
 
 
             # i save the results in the test log
@@ -309,37 +331,46 @@ def main():
             censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING) 
             #should i apply the scale factor  to the page dimension or rescale everything 
             #together later?
+            #if save_debug_images:
+             #   censor_close_adjusted_img = save_these_boxes("censor_close",debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,censor_close_boxes,color='red')
+            #print(len(censor_boxes), len(censor_close_boxes), matched_id)
+            orb_match = False
 
             if orb_match:
                 #i associate each close box with the container box and create an ordered list of the containers that match the censoring boxes
-                map_to_container = map_to_smallest_containing(censor_close_boxes,censor_boxes)
-                boundary_boxes = []
-                for close_box in censor_close_boxes:
-                    container_box = map_to_container[close_box]
-                    boundary_boxes.append(container_box)
+                #map_to_container = map_to_smallest_containing(censor_boxes,censor_close_boxes)
+
+                censor_boxes,censor_close_boxes, partial_coverage = map_to_all_containing(censor_boxes,censor_close_boxes,
+                                                                                          partial_coverage, percentage_threshold=0.5) #to deal with multiple censor boxes for one censor-close and vicevers
+                #i create an extanded list with all the censor and censor-close boxes in superposition of more than 0.
                 #i rescale the dimensions of the censor-close boxes
-                censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
+                new_censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
                                                                     shift_x, shift_y, angle_degrees,name='censor_close')
+                #if save_debug_images:
+                 #   save_these_boxes("censor_close_adjusted_pre_post",debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,
+                                    # matched_id,img,censor_close_boxes,color='green')
 
                 # I enlarge close-censor regions based on alignement results
-                censor_close_boxes = adjust_close_censor(censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle)
+                censor_close_boxes_orb = adjust_close_censor(new_censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle)
+                if save_debug_images:
+                    save_these_boxes("censor_close_adjusted_pre_post_orb",debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,
+                                     matched_id,img,[new_censor_close_boxes,censor_close_boxes_orb,censor_boxes],list_of_colors=['red','green','black'])
 
                 # apply censoring considering the boundary boxes and the close censor boxes
-                parent_path=os.path.join(save_path, f"patient_{unique_id}", f"document_{QUESTIONNAIRE}")#, f"censored_page_{n_page}.png")
-                create_folder(parent_path, parents=True, exist_ok=True)
-                save_path=os.path.join(parent_path, f"censored_page_w{warning_string}_{matched_id}.png")
-                censored_img = censor_image_with_boundary(img, censor_close_boxes, boundary_boxes, 
+                save_censored_images_path=os.path.join(censored_images_path, f"{unique_id}", 
+                                                       f"q_{QUESTIONNAIRE}",f"censored_page_w{warning_string}_{matched_id}.png")#, f"censored_page_{n_page}.png")
+                create_folder(os.path.dirname(save_censored_images_path), parents=True, exist_ok=True)
+                censored_img = censor_image_with_boundary(img, censor_close_boxes_orb, censor_boxes, 
                                                         partial_coverage=partial_coverage,logger=image_time_logger,
                                                         thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
                 image_time_logger and image_time_logger.call_start(f'writing_to_memory')
-                cv2.imwrite(str(save_path), censored_img)
+                cv2.imwrite(save_censored_images_path, censored_img)
                 image_time_logger and image_time_logger.call_end(f'writing_to_memory')
             else:
                 # i censor considering the large regions
-                save_censored_image(img, censor_boxes, save_path,unique_id,QUESTIONNAIRE,matched_id,
+                save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
                                     warning=warning_string,partial_coverage=partial_coverage,
-                                    thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)
-        return 0    
+                                    thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)    
 
     logger.info("Conversion finished")
     return 0
@@ -575,8 +606,9 @@ def check_blank_and_extra(roi_boxes, pre_computed_rois, page, img_size):
                     'black_diff_to_template': black_diff_to_template, 'cc_difference_to_template': cc_difference_to_template}
     return prev_values
         
-def adjust_close_censor(new_censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle):
-    def transform_box(pts, scale, shift_x, shift_y):
+def adjust_close_censor(censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, orb_angle):
+    def transform_box(box, scale, shift_x, shift_y):
+        pts=box.copy() #without this line the censor_close_boxes list is modified in place
         #i suppose the box is saved as a polygon: points in clockwise order starting from the top left corner (pt0, pt1, pt2, pt3)
         # 1. Scaling around the center
         center = np.mean(pts, axis=0)
@@ -614,8 +646,10 @@ def adjust_close_censor(new_censor_close_boxes,orb_shift_x, orb_shift_y, orb_sca
             pts[1] += u_h * shift_y
 
         return pts
-    for i in range(len(new_censor_close_boxes)):
-        new_censor_close_boxes[i] = transform_box(new_censor_close_boxes[i], orb_scale, orb_shift_x, orb_shift_y)
+    
+    new_censor_close_boxes = []
+    for i in range(len(censor_close_boxes)):
+        new_censor_close_boxes.append(transform_box(censor_close_boxes[i], orb_scale, orb_shift_x, orb_shift_y) )
     
     return new_censor_close_boxes
 

@@ -120,7 +120,7 @@ def enlarge_censor_regions(image_time_logger,img_size,scale_factor,censor_boxes)
     return new_censor_boxes
 
 def save_censored_image(img, censor_boxes, save_path,n_p,n_doc,n_page,warning='00', verbose=False,partial_coverage=None,logger=None,**kwargs):
-    parent_path=os.path.join(save_path, f"patient_{n_p}", f"document_{n_doc}")#, f"censored_page_{n_page}.png")
+    parent_path=os.path.join(save_path, f"{n_p}", f"q_{n_doc}")#, f"censored_page_{n_page}.png")
     create_folder(parent_path, parents=True, exist_ok=True)
     save_path=os.path.join(parent_path, f"censored_page_w{warning}_{n_page}.png")
     censored_img = censor_image(img, censor_boxes, verbose=verbose,partial_coverage=partial_coverage,logger=logger,**kwargs)
@@ -158,11 +158,39 @@ def map_to_smallest_containing(list1, list2):
                     min_area = area
                     best_match = r1
         
-        mapping[r2] = best_match
+        mapping[tuple(r2)] = best_match
         
     return mapping
 
+def map_to_all_containing(list1, list2, partial, percentage_threshold=0.5):
+    """
+    assume list2 is censor-close and list1 is censor. Returns all the censor-close,censor pairs that are superimposed for more than 50%.
+    For each it returns the partial keyword copying it from the corresponding censor boox
+    """
+    new_list_1 = []
+    new_list_2 = []
+    new_partial = []
 
+    for r2 in list2:
+        x1b, y1b, x2b, y2b = r2
+
+        for i,r1 in enumerate(list1):
+            x1a, y1a, x2a, y2a = r1
+            
+            # Compute the fraction of area of r2 that is covered by r1
+            intersection_x1 = max(x1a, x1b)
+            intersection_y1 = max(y1a, y1b)
+            intersection_x2 = min(x2a, x2b)
+            intersection_y2 = min(y2a, y2b)
+            intersection_area = max(0, intersection_x2 - intersection_x1) * max(0, intersection_y2 - intersection_y1)
+            r2_area = get_area(r2)
+            coverage = intersection_area / r2_area if r2_area > 0 else 0
+            if coverage >= percentage_threshold:
+                new_list_1.append(r1)
+                new_list_2.append(r2)
+                new_partial.append(partial[i])
+        
+    return new_list_1, new_list_2, new_partial
 
 ######### CENSORING SCHEMES ####################
 def censor_page_base(page_dictionary, img_id, root, npy_dict,logger, image_time_logger, save_path, subj_id, doc_ind, 

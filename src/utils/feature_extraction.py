@@ -852,8 +852,9 @@ def censor_image(img: ModeImage, roi_boxes, verbose: bool = False, partial_cover
     logger and logger.call_end(f'save_censored_image')
     return censored_img
 
-
-def censor_image_with_boundary(img: ModeImage, roi_boxes, boundary_boxes, verbose: bool = False, partial_coverage=None,logger=None,**kwargs) -> ModeImage:
+ 
+def censor_image_with_boundary(img: ModeImage, roi_boxes, boundary_boxes, logger=None,
+                               verbose: bool = False, partial_coverage=None,**kwargs) -> ModeImage:
     """Censor (blacken) regions in img defined by roi_boxes (list of boxes)"""
     logger and logger.call_start(f'save_censored_image')
     if partial_coverage == None:
@@ -879,7 +880,7 @@ def censor_image_with_boundary(img: ModeImage, roi_boxes, boundary_boxes, verbos
             ], dtype=np.int32)
 
         #get boundary and create mask
-        x1, y1, x2, y2 = boundary_boxes[i]
+        x1, y1, x2, y2 = np.round(boundary_boxes[i]).astype(int)
         # 3. Translate the rotated polygon to the AABB's local coordinate system
         # We subtract the AABB top-left corner (x1, y1)
         local_poly = pts - [x1, y1]
@@ -896,14 +897,15 @@ def censor_image_with_boundary(img: ModeImage, roi_boxes, boundary_boxes, verbos
             logger and logger.call_end(f'fill_region')
             img_roi = censored_img[y1:y2, x1:x2] #this actually modifies the censored_img since img_roi is a view
         else:
+            #print("Sono entrato !")
             thickness_pct=kwargs.get('thickness_pct',0.1)
             spacing_mult=kwargs.get('spacing_mult',0.5)
             logger and logger.call_start(f'fill_striped_region')
             fill_polygon_striped_relative(
-                mask_roi, pts,
+                mask_roi, local_poly.astype(np.int32),
                 thickness_pct=thickness_pct,
                 spacing_mult=spacing_mult,
-                color = 255
+                color = [255]
             )
             img_roi = censored_img[y1:y2, x1:x2] #this actually modifies the censored_img since img_roi is a view
             logger and logger.call_end(f'fill_striped_region')
@@ -913,6 +915,5 @@ def censor_image_with_boundary(img: ModeImage, roi_boxes, boundary_boxes, verbos
             img_roi[mask_roi == 255] = (0, 0, 0)
     if verbose:
         _t1 = perf_counter()
-        print(f"censor_image: num_rois={len(roi_boxes)} time={( _t1 - _t0 ):0.6f}s")
     logger and logger.call_end(f'save_censored_image')
     return censored_img

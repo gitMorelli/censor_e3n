@@ -9,6 +9,32 @@ from matplotlib.patches import Polygon
 import matplotlib.pyplot as plt
 from src.utils.logging import FileWriter
 
+def box_to_polygon(coords):
+    """
+    Converts [xtl, ytl, xbr, ybr] OR a flat list of points 
+    into a (N, 2) array of vertices.
+    """
+    coords = np.array(coords).flatten()
+    
+    # Case 1: Axis-aligned rectangle [xtl, ytl, xbr, ybr]
+    if len(coords) == 4:
+        xtl, ytl, xbr, ybr = coords
+        
+        # Returns a (4, 2) array
+        polygon = np.array([
+            [xtl, ytl], # Top Left
+            [xbr, ytl], # Top Right
+            [xbr, ybr], # Bottom Right
+            [xtl, ybr]  # Bottom Left
+        ], dtype=np.float64) # Float allows for the precision in your example
+        
+        return polygon
+    
+    # Case 2: Already a polygon (points), just ensure (N, 2) shape
+    else:
+        # Reshape to (number_of_points, 2)
+        return coords.reshape(-1, 2).astype(np.float64)
+
 ######### Compute misalignment using ALIGN boxes #########
 '''def enlarge_crop_coords(coords, scale_factor=1.2, img_shape=None):
     x_min, y_min, x_max, y_max = coords
@@ -59,12 +85,32 @@ def enlarge_crop_coords(box, scale_factor, img_shape):
 
     return (new_x_min, new_y_min, new_x_max, new_y_max)
 
-
+'''
 def get_center(coords):
     x_min, y_min, x_max, y_max = coords
     center_x = (x_min + x_max) // 2
     center_y = (y_min + y_max) // 2
+    return center_x, center_y'''
+#also deals with polygons (returns the center of mass of the points) and with flat lists of polygon points [x1, y1, x2, y2...]
+def get_center(coords):
+    # Ensure we are working with a numpy array
+    coords = np.array(coords)
+    
+    # CASE 1: Standard [xtl, ytl, xbr, ybr] (1D array with 4 elements)
+    if coords.ndim == 1 and len(coords) == 4:
+        xtl, ytl, xbr, ybr = coords
+        return (xtl + xbr) // 2, (ytl + ybr) // 2
+    
+    # CASE 2: Polygon or List of Points [[x1,y1], [x2,y2]...]
+    # Reshape if it's a flat list of polygon points [x1, y1, x2, y2...]
+    if coords.ndim == 1:
+        coords = coords.reshape(-1, 2)
+        
+    center_x = int(np.mean(coords[:, 0]))
+    center_y = int(np.mean(coords[:, 1]))
+    
     return center_x, center_y
+
 def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_center=(0,0)):
     w, h = t_roi.shape[1], t_roi.shape[0]
     
@@ -256,7 +302,8 @@ def apply_transformation(reference,coords, scale_factor, shift_x, shift_y, angle
 
     return corners_rot #recall that now the box is not axis-aligned anymore corners_rot is a list of 4 (x,y) points
 
-def plot_rois_on_image(image, rois, save_path, colors=None):
+def plot_rois_on_image(img, rois, save_path, colors=None):
+    image=img.copy()
 
     h, w = image.shape[:2]
 
@@ -318,7 +365,8 @@ def plot_rois_on_image_stackable(image, rois, colors=None):
 
     return output_image
 
-def plot_rois_on_image_polygons(image, rois, save_path, colors=None):
+def plot_rois_on_image_polygons(img, rois, save_path, colors=None):
+    image=img.copy()
 
     h, w = image.shape[:2]
 
@@ -334,6 +382,8 @@ def plot_rois_on_image_polygons(image, rois, save_path, colors=None):
     ax.axis('off')
 
     for i, coord in enumerate(rois):
+        #print(coord)
+        coord = box_to_polygon(coord)  # Ensure we have a proper polygon format
         pts = np.array(coord, dtype=float)  # expected shape: (4, 2)
         poly = Polygon(
             pts,

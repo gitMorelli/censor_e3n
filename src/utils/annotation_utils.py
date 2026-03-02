@@ -53,15 +53,17 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
         elif box['sub_attribute']=='standard' and box['label']=='roi':
             patch = preprocess_roi(img, box_coords, mode=mode, verbose=False,target_size=None)
             '''plt.imshow(patch, cmap='gray')
-            plt.title("Preprocessed Patch")
+            plt.title("Preprocessed Patch") 
             plt.axis('off')
             plt.show()'''
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['orb'])
+            pre_comp['full']=preprocess_alignment_roi(patch, box_coords, mode=mode, verbose=False) #for template matching
         elif box['sub_attribute']=='text' and box['label']=='roi': #i may extract differen features for this wrt to standard roi
             patch = preprocess_roi(img, box_coords, mode=mode, verbose=False, target_size=None)
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['orb'])
+            pre_comp['full']=preprocess_alignment_roi(patch, box_coords, mode=mode, verbose=False) #for template matching
         elif box['sub_attribute']=='ocr':
             patch = preprocess_text_region(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_text_region(patch, mode=mode, 
