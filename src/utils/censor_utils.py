@@ -4,7 +4,7 @@ import os
 import cv2
 
 #from src.utils.convert_utils import pdf_to_png_images
-from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number, load_template_info
+from src.utils.file_utils import list_subfolders,list_files_with_extension,sort_files_by_page_number,get_page_number, load_template_info, deserialize_keypoints
 from src.utils.file_utils import get_basename, create_folder, check_name_matching, remove_folder, load_annotation_tree, load_subjects_tree
 
 #from src.utils.xml_parsing import load_xml, iter_boxes, add_attribute_to_boxes
@@ -18,7 +18,7 @@ from src.utils.feature_extraction import extract_features_from_blank_roi, extrac
 from src.utils.feature_extraction import extract_features_from_page, preprocess_page, extract_features_from_text_region, preprocess_text_region
 
 from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
-from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
+from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching, orb_matching
 
 from src.utils.logging import FileWriter, initialize_logger
 
@@ -85,22 +85,57 @@ def get_transformation_to_match_to_template(page, root, pre_computed, img, img_s
     image_time_logger.call_end('compute_transformation')
     return scale_factor, shift_x, shift_y, angle_degrees,reference
 
-def get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=2):
+def get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=2, method = 'pre_computed'):
 
-    image_time_logger.call_start('compute_misalignement')
-    if page['shifts']==None: #means that the page was not matched correctly during template matching during reordering
-        shifts, centers = compute_misalignment(page['img'], template['align_boxes'], page['img_size'],pre_computed_template=template['pre_computed_align'],
-                                            scale_factor=scale_factor,pre_computed_rois=None)
-    else:
+    if page['shifts'] is None:#if the method is pre_computed but matching with template regions
+        #was not possible in the first phase i need to backup to a weaker methods
+        method = 'orb_page_level_homography' #as an alternative i can add a method that tries to recalculate the tempalte matches
+
+    if method == 'pre_computed': 
+        image_time_logger.call_start('compute_misalignement')
         shifts , centers = page['shifts'], page['centers']
-    image_time_logger.call_end('compute_misalignement')
+        image_time_logger.call_end('compute_misalignement')
 
-    image_time_logger.call_start('compute_transformation')
-    scale_factor, shift_x, shift_y, angle_degrees,reference = compute_transformation(shifts, centers)
-    image_time_logger.call_end('compute_transformation')
+        image_time_logger.call_start('compute_transformation')
+        scale_factor, shift_x, shift_y, angle_degrees,reference = compute_transformation(shifts, centers)
+        image_time_logger.call_end('compute_transformation')
+    elif method in ['orb_page_level_affine','orb_page_level_homography'] :
+        # orb properties of the template are already loaded in the template dictionary, also in the page dict if the second step was executed
+        template_des = template['orb']
+        template_kp = template['orb_kp']
+        orb_args = template['orb_args'] #i can take the orb args from any template because they are all the same
+        nfeatures = orb_args.get('nfeatures', 500)
+        fastThreshold = orb_args.get('fastThreshold', 20)
+        edgeThreshold = orb_args.get('edgeThreshold', 31)
+        patchSize = orb_args.get('patchSize', 31)
+        if page['orb'] is None:
+            preprocessed_img = preprocess_page(page['img'])
+            pre_comp = extract_features_from_page(preprocessed_img, verbose=False, to_compute=['orb'],
+                                                    nfeatures=nfeatures, fastThreshold=fastThreshold, edgeThreshold=edgeThreshold, patchSize=patchSize)
+            page_des=pre_comp['orb_des'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
+            page_kp=deserialize_keypoints(pre_comp['orb_kp'])
+        else:
+            page_des = page['orb']
+            page_kp = deserialize_keypoints(page['orb_kp'])
+        if method == 'orb_page_level_affine':
+            compute_method = "affine"
+        else:
+            compute_method = "homography"
+        is_matched, _,shift_x, shift_y, scale_factor, angle_degrees = orb_matching(img=None,box=None,template_properties=None, 
+                                                                                 image_kpts=(page_kp,page_des),template_kpts=(template_kp,template_des), 
+                                                                                 compute_method=compute_method, 
+                                                                                 shift_wr_tl=(0,0))
+        reference=(0,0)
+
+        if not is_matched:
+            #if the matching fails i can backup to a simpler method that does not use the template matches
+            return 'failure', None, None, None, None, None
+
     return scale_factor, shift_x, shift_y, angle_degrees,reference
 
-def apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, shift_x, shift_y, angle_degrees,name='roi'):
+def apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, shift_x, shift_y, angle_degrees,name='roi',option='standard'):
+    if option=='no_rotation' and shift_x!='homography':
+        angle_degrees=0
     new_roi_boxes = []
     for coord in roi_boxes: 
         image_time_logger.call_start(f'apply_transformation_{name}') #I should limit the shift/rotation to a certain max value

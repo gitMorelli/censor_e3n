@@ -382,6 +382,7 @@ def initialize_page_dictionary(sorted_files,input_from_file=True):
         page_dictionary[img_id]['report_phash']=None
         #orb properties
         page_dictionary[img_id]['orb']=None
+        page_dictionary[img_id]['orb_kp']=None
         page_dictionary[img_id]['report_orb']=None
         page_dictionary[img_id]['match_orb']=None
         #ocr properties
@@ -457,6 +458,8 @@ def pre_load_selected_templates(templates_to_consider,npy_dict, root, template_d
         template_dictionary[t_id]['text_box']=text_box
         template_dictionary[t_id]['psm']=psm
         template_dictionary[t_id]['orb']=pre_computed[-1]['orb_des']
+        template_dictionary[t_id]['orb_kp']=deserialize_keypoints(pre_computed[-1]['orb_kp'])
+        template_dictionary[t_id]['orb_args']=pre_computed[-1]['orb_args']
         template_dictionary[t_id]['template_size'] = get_page_dimensions(root, t_id)
     return template_dictionary
 
@@ -479,11 +482,19 @@ def pre_load_image_properties(pages_to_consider,page_dictionary,template_diction
         if 'orb' in properties: #should follow im loading because it requires the image to be in the dictionary already
             if page_dictionary[img_id]['orb'] is None:
                 preprocessed_img = preprocess_page(page_dictionary[img_id]['img'])
-                pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False,to_compute=['orb'])
+                orb_args = template_dictionary[1]['orb_args'] #i can take the orb args from any template because they are all the same
+                nfeatures = orb_args.get('nfeatures', 500)
+                fastThreshold = orb_args.get('fastThreshold', 20)
+                edgeThreshold = orb_args.get('edgeThreshold', 31)
+                patchSize = orb_args.get('patchSize', 31)
+                pre_comp = extract_features_from_page(preprocessed_img, mode=mode, verbose=False, to_compute=['orb'],
+                                                      nfeatures=nfeatures, fastThreshold=fastThreshold, edgeThreshold=edgeThreshold, patchSize=patchSize)
                 page_dictionary[img_id]['orb']=pre_comp['orb_des'] #.copy() copy should not be needed if i reinitialize pre_comp in the loop
+                page_dictionary[img_id]['orb_kp']=deserialize_keypoints(pre_comp['orb_kp'])
     return page_dictionary
 
-def perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, n_align_regions,scale_factor, matching_threshold=0.7,compute_report=False):
+def perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, n_align_regions,scale_factor, 
+                              matching_threshold=0.7,compute_report=False,metric="matchTemplate",**kwargs):
     '''expects a list or a list of pairs, if only a list is provided it means we consider the list of pairs i,i j,j k,k ..
     the first element is the id of a page and the second is the id of the template'''
     if pairs_to_consider and isinstance(pairs_to_consider[0], (int, float)):
@@ -499,23 +510,24 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
         pre_computed_align = template_dictionary[t_id]['pre_computed_align']
         if compute_report:
             shifts, centers, processed_rois, report = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
-                                pre_computed_template=pre_computed_align,scale_factor=scale_factor, matching_threshold=matching_threshold, return_confidences=True)
+                                pre_computed_template=pre_computed_align,scale_factor=scale_factor, 
+                                matching_threshold=matching_threshold, return_confidences=True,metric=metric, **kwargs)  
         else:
             shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
-                                    pre_computed_template=pre_computed_align,scale_factor=scale_factor, matching_threshold=matching_threshold) #recall this functions returns a shift for each good match
+                                    pre_computed_template=pre_computed_align,scale_factor=scale_factor, 
+                                    matching_threshold=matching_threshold,metric=metric, **kwargs) #recall this functions returns a shift for each good match
             #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
             report = None
         
         if len(shifts)>=n_align_regions:
-            page_dictionary[img_id]['shifts'] = shifts
-            page_dictionary[img_id]['centers'] = centers 
             page_dictionary[img_id]['template_matches']+=1 #should be +=1
-            page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
+            #page_dictionary[img_id]['stored_template'] = processed_rois #save the rois so i can re-use them without recomputing
             page_dictionary[img_id]['matched_page']=t_id
             page_dictionary[img_id]['matched_page_list'].append(t_id)
-            page_dictionary[img_id]['confidence_template'] = report
             template_dictionary[t_id]['matched_to_this']+=1
- 
+            page_dictionary[img_id]['shifts'] = shifts
+            page_dictionary[img_id]['centers'] = centers 
+        page_dictionary[img_id]['confidence_template'] = report
     return page_dictionary,template_dictionary
 
 def perform_phash_matching(page_dictionary,template_dictionary, pages_list, templates_to_consider, 

@@ -8,6 +8,20 @@ import math
 from matplotlib.patches import Polygon
 import matplotlib.pyplot as plt
 from src.utils.logging import FileWriter
+import datetime
+import uuid
+
+def convert_to_axis_aligned_box(coords):
+    '''takes a four points polygon and returns the axis aligned bounding box that contains the polygon'''
+    new_coords=[]
+    for coord_old in coords:
+        coord = np.array(coord_old).reshape(-1, 2)
+        x_min = np.min(coord[:, 0]).astype(int)
+        y_min = np.min(coord[:, 1]).astype(int)
+        x_max = np.max(coord[:, 0]).astype(int)
+        y_max = np.max(coord[:, 1]).astype(int)
+        new_coords.append([x_min, y_min, x_max, y_max])
+    return new_coords
 
 def box_to_polygon(coords):
     """
@@ -111,7 +125,7 @@ def get_center(coords):
     
     return center_x, center_y
 
-def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_center=(0,0)):
+def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_tl=(0,0)):
     w, h = t_roi.shape[1], t_roi.shape[0]
     
 
@@ -126,16 +140,14 @@ def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_cen
         return False,max_val,center_x, center_y
     # For TM_SQDIFF methods, the best match is min_loc; otherwise, max_loc
     top_left = max_loc
-    center_x = top_left[0] + w // 2 
-    center_y = top_left[1] + h // 2
-    expected_x = (f_roi.shape[1] // 2) - shift_wr_center[0]
-    expected_y = (f_roi.shape[0] // 2) - shift_wr_center[1] 
-    shift_x = center_x - expected_x
-    shift_y = center_y - expected_y
+    # tìi correct the computed shift if the crop region was extended, thus shift_wr_tl is not (0,0)
+    shift_x = top_left[0] - shift_wr_tl[0]
+    shift_y = top_left[1] - shift_wr_tl[1]
     return True,max_val,shift_x, shift_y
 
 
-def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2,matching_threshold=0.7, pre_computed_rois=None,return_confidences=False):
+def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2,
+                         matching_threshold=0.7, pre_computed_rois=None,return_confidences=False, metric="matchTemplate",**kwargs):
     if pre_computed_rois:
         pre_computed=True
     else:
@@ -147,48 +159,93 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
     processed_rois=[]
     confidences=[]
     for i,coord in enumerate(rois):
-        center_x, center_y = get_center(coord)
-        new_coord = enlarge_crop_coords(coord, scale_factor=scale_factor, img_shape=img_shape)
-        new_center_x, new_center_y = get_center(new_coord)
+        center_x, center_y = get_center(coord) #coordinates of the center of the bounding box in the image frame
+        new_coord = enlarge_crop_coords(coord, scale_factor=scale_factor, img_shape=img_shape) #new coords are in the absolutre reference frame (image frame)
+        new_center_x, new_center_y = get_center(new_coord) #coordinates of the center of the enlarged box in the image frame
         shift_wr_center = (new_center_x - center_x, new_center_y - center_y) #if the rescaled patch is not cropped 
         #we expect to find the template at w/2,h/2 in the referece frame of the enlarged patch; If it is cropped we expect to find it at -shift_wr_center
-        t_roi = pre_computed_template[i]['full']
-        if not pre_computed:
-            f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
-        else:
-            f_roi = pre_computed_rois[i]
-        is_matched,max_val,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,shift_wr_center=shift_wr_center,threshold=matching_threshold)
+        shift_wr_tl = (coord[0]-new_coord[0], coord[1]-new_coord[1]) #coordinate di top-left corner of the original box in the reference frame of the enlarged patch 
+        if metric == "orb":
+            orb_nfeatures=kwargs.get('orb_nfeatures',2000)
+            orb_match_threshold=kwargs.get('orb_match_threshold',10)
+            orb_top_n_matches=kwargs.get('orb_top_n_matches',50)
+            is_matched, n_good_matches, shift_x, shift_y, _, _ = orb_matching(filled_png, new_coord, pre_computed_template[i], shift_wr_tl,top_n_matches=orb_top_n_matches, 
+                                                                              orb_nfeatures=orb_nfeatures, match_threshold=orb_match_threshold)
+            max_val = n_good_matches
+        elif metric == "matchTemplate":
+            t_roi = pre_computed_template[i]['full']
+            if not pre_computed:
+                f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
+            else:
+                f_roi = pre_computed_rois[i]
+            is_matched,max_val,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,
+                                                                    shift_wr_tl=shift_wr_tl,threshold=matching_threshold)
         confidences.append(max_val)
         if is_matched: #only include regions for which you have a match
             shifts.append((shift_x, shift_y))
             centers.append((center_x, center_y))
-        processed_rois.append(f_roi)
+        if metric == "matchTemplate":
+            processed_rois.append(f_roi)
+        else:
+            processed_rois.append(None)
     if return_confidences:
         return shifts, centers,processed_rois,confidences
     return shifts, centers,processed_rois
 
 
-def orb_matching(img,box,template_properties, top_n_matches=50, orb_nfeatures=2000, match_threshold=10, scale_factor=2):
-
-    img_shape = (img.shape[1], img.shape[0]) # (width, height)  
-    #print(img_shape)
-
-    #box = enlarge_crop_coords(box, scale_factor=scale_factor, img_shape=img_shape)
+def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,template_kpts=None, 
+                 compute_method="center_of_mass",
+                 shift_wr_tl=(0,0), 
+                 top_n_matches=50, orb_nfeatures=2000, match_threshold=10):
+    #by default i consider that i am comparing patches that are at teh same absolute position in the image (shift_wr_tl=(0,0)) 
     
-    # preprocess image
-    preprocessed_patch = preprocess_roi(img, box, target_size=None)
-    # Display the preprocessed patch for debugging or visualization
-    '''plt.imshow(preprocessed_patch, cmap='gray')
-    plt.title("Preprocessed Patch")
-    plt.axis('off')
-    plt.show()'''
+    if image_kpts is not None and template_kpts is not None:
+        kps_image, des_image = image_kpts
+        kps_template, des_template = template_kpts
+    else:
+        # preprocess image
+        preprocessed_patch = preprocess_roi(img, box, target_size=None)
+        # Display the preprocessed patch for debugging or visualization
+        '''plt.imshow(preprocessed_patch, cmap='gray')
+        plt.title("Preprocessed Patch")
+        plt.axis('off')
+        plt.show()'''
 
-    #compute orb features for the patch
-    pre_comp = extract_features_from_roi(preprocessed_patch,to_compute=['orb'],orb_nfeatures=orb_nfeatures)
-    kps_image , des_image = deserialize_keypoints(pre_comp['orb_kp']) , pre_comp['orb_des'] 
+        #save an image of the patch for debugging with time of processing in the name to avoid overwriting
+        # 1. Generate Timestamp (YearMonthDay_HourMinuteSecond)
+        '''timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        # 2. Generate a short Random Identifier (8 characters)
+        # We use uuid4 and take the first 8 characters for brevity
+        random_id = str(uuid.uuid4())[:8]
+        cv2.imwrite(f"//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline\\debug_temporary\\debug_patch_{timestamp}_{random_id}.png", preprocessed_patch)'''
 
-    kps_template, des_template = deserialize_keypoints(template_properties['orb_kp']), template_properties['orb_des']
+        if template_properties['orb_args']:
+            orb_nfeatures=template_properties['orb_args']['orb_nfeatures']
+            orb_edgeThreshold=template_properties['orb_args']['orb_edgeThreshold']
+            orb_patchSize=template_properties['orb_args']['orb_patchSize']
+            orb_fastThreshold=template_properties['orb_args']['orb_fastThreshold']
 
+        #compute orb features for the patch
+        pre_comp = extract_features_from_roi(preprocessed_patch,to_compute=['orb'],orb_nfeatures=orb_nfeatures, 
+                                             orb_edgeThreshold=orb_edgeThreshold, orb_patchSize=orb_patchSize, orb_fastThreshold=orb_fastThreshold)
+        kps_image , des_image = deserialize_keypoints(pre_comp['orb_kp']) , pre_comp['orb_des'] 
+
+        kps_template, des_template = deserialize_keypoints(template_properties['orb_kp']), template_properties['orb_des']
+
+    #warnings
+    if des_image is None :
+        raise ValueError("des_image is empty")
+    if des_template is None:
+        raise ValueError("des_template is empty")
+
+    # 2. Check if they have the same shape and type
+    if des_image.dtype != des_template.dtype:
+        raise ValueError(f"Error: Descriptor type mismatch! {des_image.dtype} vs {des_template.dtype}")
+        
+    if des_image.shape[1] != des_template.shape[1]:
+        raise ValueError(f"Error: Descriptor dimension mismatch! {des_image.shape[1]} vs {des_template.shape[1]}")
+    
+    
     # 2. Match features
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     matches = sorted(bf.match(des_image, des_template), key=lambda x: x.distance)
@@ -196,52 +253,113 @@ def orb_matching(img,box,template_properties, top_n_matches=50, orb_nfeatures=20
     # Use only the top 50 matches for stability
     good_matches = matches[:top_n_matches]
 
-    if len(good_matches) > match_threshold:
+    n_good_matches = len(good_matches)
+    is_matched = n_good_matches > match_threshold
+
+    if is_matched:
         # Extract coordinates of matched points
         image_pts = np.float32([kps_image[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
         template_pts = np.float32([kps_template[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2) 
 
-        # 3. Find the Homography Matrix
-        M, mask = cv2.findHomography(template_pts, image_pts, cv2.RANSAC, 5.0) #the template is transformed to the image
-        #-> the scale, rotation and shift will be the parameters that bring from the template to the image
+        if compute_method == "affine":
+            M, inliers = cv2.estimateAffinePartial2D(template_pts, image_pts, method=cv2.RANSAC, ransacReprojThreshold=5.0)
 
-        # 4. Extract Info from Matrix M
-        # M = [ [a, b, tx],
-        #       [c, d, ty],
-        #       [0, 0, 1 ] ]
-        
-        # Shift (Translation)
-        shift_x = M[0, 2]
-        shift_y = M[1, 2]
+            x_coords_image = image_pts[:, 0, 0] 
+            x_coords_template = template_pts[:, 0, 0] 
 
-        # Scale
-        # Derived from the change in length of the basis vectors
-        scale_x = math.sqrt(M[0, 0]**2 + M[1, 0]**2)
-        scale_y = math.sqrt(M[0, 1]**2 + M[1, 1]**2)
-        avg_scale = (scale_x + scale_y) / 2
+            
+            if len(x_coords_image) > 0:
+                max_x_dist_template = np.ptp(x_coords_template)  # ptp = "peak to peak" (max - min)
+                max_x_dist_image = np.ptp(x_coords_image)
+                #print(f"Max X distance in template: {max_x_dist_template}, Max X distance in image: {max_x_dist_image}, Shift {M[0, 2]}")
 
-        # Rotation Angle (in degrees)
-        angle = math.atan2(M[1, 0], M[0, 0]) * (180 / math.pi)
+            # 4. Extract Info from 2x3 Matrix M
+            shift_x = M[0, 2] - shift_wr_tl[0]
+            shift_y = M[1, 2] - shift_wr_tl[1]
+            
+            # In a Partial Affine matrix:
+            # s_cos = M[0,0]
+            # s_sin = M[1,0]
+            scale = math.sqrt(M[0, 0]**2 + M[1, 0]**2)
+            angle = math.atan2(M[1, 0], M[0, 0]) * (180 / math.pi)
+        elif compute_method == "homography":
+            M, mask = cv2.findHomography(template_pts, image_pts, cv2.RANSAC, 5.0)
+            return is_matched, n_good_matches,'homography','homography',M,'homography' #i return the M matrix in place of the scale
+        elif compute_method == "center_of_mass":
+            # 1. Calculate the 'Center of Mass' of keypoints in both coordinate systems
+            # template_pts and image_pts are shape (-1, 1, 2)
+            com_template = np.mean(template_pts, axis=0).flatten() # [avg_x, avg_y]
+            com_image = np.mean(image_pts, axis=0).flatten()     # [avg_x, avg_y]
 
-        return shift_x, shift_y, avg_scale, angle
+            # 2. Calculate the "Intuitive Shift"
+            # This is how much the actual center of your features moved
+            intuitive_shift_x = com_image[0] - com_template[0]
+            intuitive_shift_y = com_image[1] - com_template[1]
+
+            # 3. Apply your enlargement correction
+            shift_x = intuitive_shift_x - shift_wr_tl[0]
+            shift_y = intuitive_shift_y - shift_wr_tl[1]
+            #print(f"Final Shift after correction: ({shift_x:.2f}, {shift_y:.2f})")
+            scale = 1.0
+            angle = 0.0
+
+        return is_matched, n_good_matches,shift_x, shift_y, scale, angle
     else:
-        return None, None, None, None  # Not enough matches to compute transformation
+        return is_matched,n_good_matches, None, None, None, None  # Not enough matches to compute transformation
 
 def compute_distance(c1,c2):
     return np.sqrt((c2[0] - c1[0]) ** 2 + (c2[1] - c1[1]) ** 2)
 
-def compute_transformation(shifts, centers):
+def compute_transformation(shifts, centers, selection="top_left"):
+    '''You can select top_left or most_distant for the pair of rois to consider for computing alignement'''
     if len(shifts) < 2:
         return 1.0,0,0,0,(0,0)  # Not enough data to compute transformation
     max_dist = 0
-    for i in range(len(shifts)):
-        for j in range(i + 1, len(shifts)):
+
+    if selection == "most_distant":
+        for i in range(len(shifts)):
+            for j in range(i + 1, len(shifts)):
+                c1 = centers[i]
+                c2 = centers[j]
+                dist = compute_distance(c1, c2)
+                if dist > max_dist:
+                    max_dist = dist
+                    idx1, idx2 = i, j
+    elif selection == "top_left":
+        # Select the pair of ROIs whose centers are closest to the top-left corner (0,0)
+        min_dist_to_top_left = float('inf')
+        for i in range(len(shifts)):
             c1 = centers[i]
-            c2 = centers[j]
-            dist = compute_distance(c1, c2)
-            if dist > max_dist:
-                max_dist = dist
-                idx1, idx2 = i, j
+            dist_to_top_left = compute_distance(c1, (0, 0))
+            if dist_to_top_left < min_dist_to_top_left:
+                min_dist_to_top_left = dist_to_top_left
+                idx1 = i
+        # Find the second point that is farthest among the remaining points
+        for j in range(len(shifts)):
+            if j != idx1:
+                c2 = centers[j]
+                dist_between_points = compute_distance(centers[idx1], c2)
+                if dist_between_points > max_dist:
+                    max_dist = dist_between_points
+                    idx2 = j
+    elif selection == "origin":
+        '''it doesn't make sense because if i take the shift from the first box the rotation is around that box'''
+        # find the point that is closest to the origin to compute shift
+        min_dist_to_top_left = float('inf')
+        for i in range(len(shifts)):
+            c1 = centers[i]
+            dist_to_top_left = compute_distance(c1, (0, 0))
+            if dist_to_top_left < min_dist_to_top_left:
+                min_dist_to_top_left = dist_to_top_left
+                idx1 = i
+        # Find the point that is farthest from the origin (0,0) to compute rotation
+        for j in range(len(shifts)):
+            if j != idx1:
+                c2 = centers[j]
+                dist_between_points = compute_distance((0,0), c2)
+                if dist_between_points > max_dist:
+                    max_dist = dist_between_points
+                    idx2 = j
     center_1=centers[idx1]
     center_2=centers[idx2]
     shift_1=shifts[idx1]
@@ -272,37 +390,52 @@ def rotate_points_about_pivot(points, px, py, alpha_deg):
 
 def apply_transformation(reference,coords, scale_factor, shift_x, shift_y, angle_degrees, inverse=False):
     #rotation is around reference box (upper left)
-    if inverse:
-        scale_factor = 1 / scale_factor
-        shift_x = -shift_x
-        shift_y = -shift_y
+    if shift_x == 'homography':
+        #scale factor is an homography transformation
+        M = scale_factor
+        pts = np.float32([
+            [coords[0], coords[1]], 
+            [coords[2], coords[1]], 
+            [coords[2], coords[3]], 
+            [coords[0], coords[3]]
+        ]).reshape(-1, 1, 2)
+
+        # 3. Apply the Homography transformation
+        # This maps the points from Image 1's perspective to Image 2's perspective
+        transformed_pts = cv2.perspectiveTransform(pts, M)
+        return transformed_pts.reshape(-1, 2)  # Return as (4, 2) array of points
+    else:
+        if inverse:
+            scale_factor = 1 / scale_factor
+            shift_x = -shift_x
+            shift_y = -shift_y
+            angle_degrees = -angle_degrees
         angle_degrees = -angle_degrees
-    angle_degrees = -angle_degrees
-    x_min, y_min, x_max, y_max = coords
-    center_x = (x_min + x_max) / 2
-    center_y = (y_min + y_max) / 2
-    width = x_max - x_min
-    height = y_max - y_min
-    new_width = width * scale_factor
-    new_height = height * scale_factor
-    angle_radians = np.radians(angle_degrees)
-    cos_angle = np.cos(angle_radians)
-    sin_angle = np.sin(angle_radians)
-    new_center_x = center_x + shift_x
-    new_center_y = center_y + shift_y
-    reference_x_min, reference_y_min = reference
-    # Compute coordinates. Rotate the whole box around the reference point (sides may not be axis-aligned anymore)
-    corners = np.array([
-        [new_center_x - new_width/2, new_center_y - new_height/2],
-        [new_center_x + new_width/2, new_center_y - new_height/2],
-        [new_center_x + new_width/2, new_center_y + new_height/2],
-        [new_center_x - new_width/2, new_center_y + new_height/2],
-    ])
-    corners_rot = rotate_points_about_pivot(corners, reference_x_min, reference_y_min, angle_degrees)
+        x_min, y_min, x_max, y_max = coords
+        center_x = (x_min + x_max) / 2
+        center_y = (y_min + y_max) / 2
+        width = x_max - x_min
+        height = y_max - y_min
+        new_width = width * scale_factor
+        new_height = height * scale_factor
+        angle_radians = np.radians(angle_degrees)
+        cos_angle = np.cos(angle_radians)
+        sin_angle = np.sin(angle_radians)
+        new_center_x = center_x + shift_x
+        new_center_y = center_y + shift_y
+        reference_x_min, reference_y_min = reference
+        # Compute coordinates. Rotate the whole box around the reference point (sides may not be axis-aligned anymore)
+        corners = np.array([
+            [new_center_x - new_width/2, new_center_y - new_height/2],
+            [new_center_x + new_width/2, new_center_y - new_height/2],
+            [new_center_x + new_width/2, new_center_y + new_height/2],
+            [new_center_x - new_width/2, new_center_y + new_height/2],
+        ])
+        corners_rot = rotate_points_about_pivot(corners, reference_x_min, reference_y_min, angle_degrees)
 
     return corners_rot #recall that now the box is not axis-aligned anymore corners_rot is a list of 4 (x,y) points
 
-def plot_rois_on_image(img, rois, save_path, colors=None):
+def plot_rois_on_image(img, rois, save_path, colors=None): 
     image=img.copy()
 
     h, w = image.shape[:2]
@@ -313,6 +446,7 @@ def plot_rois_on_image(img, rois, save_path, colors=None):
 
     if colors is None:
         colors = ['red'] * len(rois)
+    #print(colors)
 
     ax = plt.axes()
     ax.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))

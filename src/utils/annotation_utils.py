@@ -46,7 +46,14 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
         #i extract and save features for roi, roi-blank, and align boxes
         pre_comp = None
         if box['sub_attribute']=='align':
-            pre_comp = {'full':preprocess_alignment_roi(img, box_coords, mode=mode, verbose=False)}
+            # iextract orbs features from align regions
+            patch = preprocess_roi(img, box_coords, mode=mode, verbose=False,target_size=None)
+            pre_comp = extract_features_from_roi(patch, mode=mode, 
+                                                verbose=False,to_compute=['orb'])
+            #i extract the whole image for template matching 
+            pre_comp['full']=preprocess_alignment_roi(img, box_coords, mode=mode, verbose=False)
+            if pre_comp['orb_des'] is None:
+                raise ValueError(f"ORB feature extraction failed for align box")
         elif box['sub_attribute']=='blank':
             patch = preprocess_blank_roi(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_blank_roi(patch, mode=mode, verbose=False,to_compute=['cc','n_black'])
@@ -58,12 +65,12 @@ def precompute_features_on_template_page(bb_list, img,img_size, ocr_psm, crop_pa
             plt.show()'''
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['orb'])
-            pre_comp['full']=preprocess_alignment_roi(patch, box_coords, mode=mode, verbose=False) #for template matching
+            pre_comp['full']=preprocess_alignment_roi(img, box_coords, mode=mode, verbose=False) #for template matching
         elif box['sub_attribute']=='text' and box['label']=='roi': #i may extract differen features for this wrt to standard roi
             patch = preprocess_roi(img, box_coords, mode=mode, verbose=False, target_size=None)
             pre_comp = extract_features_from_roi(patch, mode=mode, 
                                                 verbose=False,to_compute=['orb'])
-            pre_comp['full']=preprocess_alignment_roi(patch, box_coords, mode=mode, verbose=False) #for template matching
+            pre_comp['full']=preprocess_alignment_roi(img, box_coords, mode=mode, verbose=False) #for template matching
         elif box['sub_attribute']=='ocr':
             patch = preprocess_text_region(img, box_coords, mode=mode, verbose=False)
             pre_comp = extract_features_from_text_region(patch, mode=mode, 

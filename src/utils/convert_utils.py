@@ -45,119 +45,130 @@ def pdf_to_images(pdf_path):
     images = convert_from_path(pdf_path, poppler_path=POPPLER_PATH)
     return images
 
-def extract_images(pdf_path): 
-    ''' given a pdf file it returns the info needed to extract the image for each image'''
-    doc = fitz.open(pdf_path)
-    images_data=[]
-    for page_index in range(len(doc)):
-        page = doc[page_index]
-        image_data = page.get_images(full=True)  
-        images_data.append(image_data)
-    return images_data,doc
+def get_n_pages(pdf_path): 
+    ''' given a pdf file it returns the number of pages'''
+    with fitz.open(pdf_path) as doc:
+        return len(doc)
 
-def save_as_is(doc,i,images_data,out_path, return_image = False):
-    # get list of images for this specific page
-    page_images = images_data[i]
+def save_as_is(pdf_path,i,out_path, return_image = False):
+    with fitz.open(pdf_path) as doc:
+        page = doc[i]
+        # get list of images for this specific page
+        page_images = page.get_images(full=True)  
 
-    # take first image on this page
-    img = page_images[0]
-    
-    xref = img[0]
-    base_image = doc.extract_image(xref)
-    image_bytes = base_image["image"]
-    ext = base_image["ext"]
-    if return_image:
-        # Convert bytes to a numpy array
-        nparr = np.frombuffer(image_bytes, np.uint8)
-        # Decode the array into an OpenCV image (BGR format)
-        cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        return cv_img
-    else:
-        out_path = out_path+f".{ext}"
-        with open(out_path, "wb") as f:
-            f.write(image_bytes)
-        return 0
+        # take first image on this page
+        img = page_images[0]
+        
+        xref = img[0]
+        base_image = doc.extract_image(xref)
+        image_bytes = base_image["image"]
+        ext = base_image["ext"]
+        if return_image:
+            # Convert bytes to a numpy array
+            nparr = np.frombuffer(image_bytes, np.uint8)
+            # Decode the array into an OpenCV image (BGR format)
+            cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            return cv_img
+        else:
+            out_path = out_path+f".{ext}"
+            with open(out_path, "wb") as f:
+                f.write(image_bytes)
+            return 0
 
 
-def process_pdf_files(n_quest,pdf_files,save_path, save=True, groups = None):
+def process_pdf_files(n_quest,pdf_files,save_path, save=True, test_log = {}):
     ''' if save is false it returns the list of images instead of saving the pngs to memory
     If groups is provided it overrides the specification of the groups in the function'''
     #num_files=len(pdf_files)
-    if groups:
-        group_1= groups[0]
-        group_2=  groups[1]
-        group_3 = groups[2]
+    expected_properties ={
+        "1":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"}, #two layouts
+        "2":{"num_pages":8,"order": "random","stored_as":"multi-page"}, #casi visti: often missing pages, p1 e p2 in un file unico chiamato Qx e gli altri in file separati
+        #non ho ancora trovato un pattern
+        "3":{"num_pages":2,"order": "alphabetical","stored_as":"multi-page"}, 
+        "4":{"num_pages":4,"order": "reverse","stored_as":"multi-page"}, #casi: anche presente come singolo pdf con tutte le pagine in ordine inverso (inizia con Qx)
+        "5":{"num_pages":4,"order": "reverse","stored_as":"multi-page"}, #casi: anche presente come singolo pdf con tutte le pagine in ordine inverso (inizia con Qx)
+        "6":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
+        "7":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
+        "8":{"num_pages":32,"order": "alphabetical","stored_as":"single"},# casi: pagine mancanti
+        "9":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
+        "10":{"num_pages":12,"order": "alphabetical","stored_as":"single"},# sia un questionario di 2 pagine con adesione familiari sia uno di 12 (che comprende anche quelle 2)
+        "11":{"num_pages":8,"order": "alphabetical","stored_as":"single"},
+        "12":{"num_pages":12,"order": "alphabetical","stored_as":"single"},
+        "13":{"num_pages":20,"order": "alphabetical","stored_as":"single"},
+
+    }
+    properties = expected_properties.get(str(n_quest), None)
+    if properties is None:
+        raise ValueError(f"Unknown n_quest: {n_quest}. No expected properties defined.")
+    #expected  properties
+    expected_pages = properties["num_pages"] 
+    expected_order = properties["order"]
+    expected_storage = properties["stored_as"]
+    
+    #i sort the pages according to the expected ordering -> the single pages are already ordered correctly
+    if expected_order=="alphabetical":
+        # sort the files by name
+        pdf_files.sort()
     else:
-        expected_properties ={
-            "1":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"}, #two layouts
-            "2":{"num_pages":8,"order": "random","stored_as":"multi-page"}, #casi visti: often missing pages, p1 e p2 in un file unico chiamato Qx e gli altri in file separati
-            #non ho ancora trovato un pattern
-            "3":{"num_pages":2,"order": "alphabetical","stored_as":"multi-page"}, 
-            "4":{"num_pages":4,"order": "reverse","stored_as":"multi-page"}, #casi: anche presente come singolo pdf con tutte le pagine in ordine inverso (inizia con Qx)
-            "5":{"num_pages":4,"order": "reverse","stored_as":"multi-page"}, #casi: anche presente come singolo pdf con tutte le pagine in ordine inverso (inizia con Qx)
-            "6":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
-            "7":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
-            "8":{"num_pages":32,"order": "alphabetical","stored_as":"single"},# casi: pagine mancanti
-            "9":{"num_pages":4,"order": "alphabetical","stored_as":"multi-page"},# casi: pagine mancanti
-            "10":{"num_pages":12,"order": "alphabetical","stored_as":"single"},# sia un questionario di 2 pagine con adesione familiari sia uno di 12 (che comprende anche quelle 2)
-            "11":{"num_pages":8,"order": "alphabetical","stored_as":"single"},
-            "12":{"num_pages":12,"order": "alphabetical","stored_as":"single"},
-            "13":{"num_pages":20,"order": "alphabetical","stored_as":"single"},
-
-        }
+        # sort and reverse
+        pdf_files.sort()
+        pdf_files.reverse()
+    
+    individual_pages = []
+    multi_pages = []
+    for pdf_file in pdf_files:
+        n_pages=get_n_pages(pdf_file)
+        if n_pages == 1:
+            individual_pages.append(pdf_file)
+        else:
+            multi_pages.append((n_pages, pdf_file))
+    
     images_list = []
-    if n_quest in group_0:
-        #_t0 = perf_counter()
-        for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
-            images_data,doc=extract_images(pdf_file)
-            if save:
-                file_name = get_basename(pdf_file,remove_extension=True)
-                create_folder(save_path, parents=True, exist_ok=True)
-                out_path = os.path.join(save_path, file_name)
-                save_as_is(doc,0,images_data,out_path) #i always have a single image
-            else:
-                images_list.append( save_as_is(doc,0,images_data,None,return_image=True) )
-    elif n_quest in group_1:
-        #_t0 = perf_counter()
-        for i, pdf_file in enumerate(reversed(pdf_files)): #iterate on the pdf files in Q_i
-            images_data,doc=extract_images(pdf_file)
-            if save:
-                file_name = get_basename(pdf_file,remove_extension=True)
-                create_folder(save_path, parents=True, exist_ok=True)
-                out_path = os.path.join(save_path, file_name)
-                save_as_is(doc,0,images_data,out_path) #i always have a single image
-            else:
-                images_list.append( save_as_is(doc,0,images_data,None,return_image=True) ) 
-        #_t1 = perf_counter()
-        #print(f"time={( _t1 - _t0 ):0.6f}s")
-    elif n_quest in group_3:
-        for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
-            images_data,doc=extract_images(pdf_file)
-            if save:
-                sub_folder_name=get_basename(pdf_file,remove_extension=True)
-                doc_path = os.path.join(save_path, sub_folder_name)
-                create_folder(doc_path, parents=True, exist_ok=True)
-            for j, image in enumerate(images_data):
-                if save:
-                    out_path = os.path.join(doc_path, f"page_{j+1}")
-                    save_as_is(doc,len(images_data)-j-1,images_data,out_path) #i always have a single image
-                else:
-                    images_list.append( save_as_is(doc,len(images_data)-j-1,images_data,None,return_image=True) ) 
-    else: #if it is not in the outher groups is in group_2 or we don't know. If we don't know we extract everything without reordering
-        for i, pdf_file in enumerate(pdf_files): #iterate on the pdf files in Q_i
-            images_data,doc=extract_images(pdf_file)
-            if save:
-                file_name = get_basename(pdf_file,remove_extension=True)
-                #sub_folder_name=get_basename(pdf_file,remove_extension=True)
-                #doc_path = os.path.join(save_path, sub_folder_name)
-                doc_path = save_path
-                create_folder(doc_path, parents=True, exist_ok=True)
-            for j, image in enumerate(images_data):
-                if save:
-                    out_path = os.path.join(doc_path, f"{file_name}_page_{j+1}")
-                    save_as_is(doc,j,images_data,out_path) #i always have a single image
-                else:
-                    images_list.append( save_as_is(doc,j,images_data,None,return_image=True) ) 
+    already_extracted_pages=0
+    if len(multi_pages) > 0 :
+        #sort multi_pages in descending order of the first tuple element
+        multi_pages.sort(key=lambda x: x[0], reverse=True)
+        already_extracted_pages=multi_pages[0][0]
+        pdf_file = multi_pages[0][1]
+        if save:
+            sub_folder_name=get_basename(pdf_file,remove_extension=True)
+            doc_path = os.path.join(save_path, sub_folder_name)
+            create_folder(doc_path, parents=True, exist_ok=True)
+        for j in range(already_extracted_pages):
 
-    return images_list
+            if expected_order=="alphabetical":
+                page_index = j
+            else:
+                page_index = already_extracted_pages-j-1
+            
+            if save:
+                out_path = os.path.join(doc_path, f"page_{j+1}")
+                save_as_is(pdf_file,page_index,out_path) #i always have a single image
+            else:
+                images_list.append( save_as_is(pdf_file,page_index,None,return_image=True) ) 
+    #passo a quelle individuali solo se non ho già estratto tutte le pagine che mi aspettavo da quelle multi-page
+    if len(individual_pages) > 0 and (already_extracted_pages < expected_pages):
+        already_extracted_pages += len(individual_pages)
+        #remember they are already sorted
+        for pdf_file in individual_pages:
+
+            if save:
+                file_name = get_basename(pdf_file,remove_extension=True)
+                create_folder(save_path, parents=True, exist_ok=True)
+                out_path = os.path.join(save_path, file_name)
+                save_as_is(pdf_file,0,out_path) #i always have a single image
+                
+            else:
+                images_list.append( save_as_is(pdf_file,0,None,return_image=True) )
+    
+    test_log["extracted_pages"] = already_extracted_pages 
+    test_log["expected_pages"] = expected_pages
+    test_log["multi_page_files"] = len(multi_pages)
+    test_log["individual_page_files"] = len(individual_pages)
+    if len(multi_pages) > 0:
+        test_log["multi_page_largest"] = [multi_pages[0][0]] 
+    else:
+        test_log["multi_page_largest"] = None
+
+    return images_list, test_log
 

@@ -61,8 +61,8 @@ def save_w_boxes(save_path,subj_id,doc_ind,matched_id,img,root,pre_computed,logg
     debug_boxes=[]
     box_colors = []
     box_types = []
-    colors = {"align":"red", "roi":"green", "censor":"blue", "censor_close":"cyan",
-              "new_align":"orange", "new_roi":"lightgreen", "new_censor":"lightblue", "new_censor_close":"lightcyan"}
+    colors = {"align":"red", "roi":"red", "censor":"red", "censor_close":"red",
+              "new_align":"green", "new_roi":"green", "new_censor":"green", "new_censor_close":"green"}
 
     if "align" in which_boxes:
         boxes, pre_computed_align = get_align_boxes(root,pre_computed,matched_id)
@@ -84,16 +84,20 @@ def save_w_boxes(save_path,subj_id,doc_ind,matched_id,img,root,pre_computed,logg
         debug_boxes+=boxes
         box_colors+=[colors["censor_close"] for i in range(len(boxes))]
         box_types+=["censor_close" for i in range(len(boxes))]
-    new_image=plot_rois_on_image_stackable(img, debug_boxes, colors=box_colors)
+    
+    if 'transformed' in which_boxes:
+        new_image=plot_rois_on_image_stackable(img, debug_boxes, colors=box_colors)
 
-    if (transformation is not None) and ('transformed' in which_boxes): 
-        new_boxes = apply_transformation_to_boxes(debug_boxes, logger, transformation['reference'],transformation['scale_factor'], 
-                                                            transformation['shift_x'], transformation['shift_y'], 
-                                                            transformation['angle_degrees'],name='align')
-        box_colors=[]
-        for box_type in box_types:
-            box_colors.append(colors[f"new_{box_type}"] )
-        plot_rois_on_image_polygons(new_image, new_boxes, save_debug_path,colors=box_colors)
+        if (transformation is not None): 
+            new_boxes = apply_transformation_to_boxes(debug_boxes, logger, transformation['reference'],transformation['scale_factor'], 
+                                                                transformation['shift_x'], transformation['shift_y'], 
+                                                                transformation['angle_degrees'],name='align')
+            box_colors=[]
+            for box_type in box_types:
+                box_colors.append(colors[f"new_{box_type}"] )
+            plot_rois_on_image_polygons(new_image, new_boxes, save_debug_path,colors=box_colors)
+    else:
+        plot_rois_on_image(img, debug_boxes, save_debug_path,colors=box_colors)
 
 def save_these_boxes(filename,save_path,subj_id,doc_ind,matched_id,img,list_of_boxes,list_of_colors=['red']):
     parent_path=os.path.join(save_path, f"patient_{subj_id}", f"document_{doc_ind}")#, f"censored_page_{n_page}.png")
@@ -109,7 +113,9 @@ def save_these_boxes(filename,save_path,subj_id,doc_ind,matched_id,img,list_of_b
     plot_rois_on_image_polygons(img, boxes, colors=colors, save_path=save_debug_path)
 
 def superimpose_images(img1_path_or_img, img2_path, output_path,logger ,alpha=0.5, threshold_val=200):
-    '''superimpose two images and shows the second one in red'''
+    '''superimpose two images and shows the second one in red
+    the second is meant to be the template
+    '''
     #if the inputs are array i dont need to load
     if not isinstance(img1_path_or_img, np.ndarray):
         img1 = cv2.imread(img1_path_or_img)

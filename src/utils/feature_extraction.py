@@ -563,11 +563,20 @@ def extract_features_from_roi(patch: ModeImage, mode: str = "cv2",
         features['profile_h'] = projection_profiles(patch, axis=1)
         features['profile_v'] = projection_profiles(patch, axis=0)
     if 'orb' in to_compute:
-        nfeatures=kwargs.get('orb_nfeatures',2000)
-        orb = cv2.ORB_create(nfeatures=nfeatures) #the patch should be grayscaled (it is since i expect it also for phash)
+        nfeatures=kwargs.get('orb_nfeatures',500)
+        edgeThreshold=kwargs.get('orb_edgeThreshold',5)
+        patchSize=kwargs.get('orb_patchSize',5)
+        fastThreshold=kwargs.get('orb_fastThreshold',5)
+        orb = cv2.ORB_create(nfeatures=nfeatures,fastThreshold=fastThreshold,edgeThreshold=edgeThreshold, patchSize=patchSize) #the patch should be grayscaled (it is since i expect it also for phash)
         kp, des = orb.detectAndCompute(patch, None)
         features['orb_kp']=serialize_keypoints(kp)
         features['orb_des']=des
+        features['orb_args'] = {
+            'orb_nfeatures': nfeatures,
+            'orb_edgeThreshold': edgeThreshold,
+            'orb_patchSize': patchSize,
+            'orb_fastThreshold': fastThreshold
+        }
 
     if verbose:
         _t1 = perf_counter()
@@ -649,10 +658,20 @@ def extract_features_from_page(patch: ModeImage, mode: str = "cv2",
         features['page_phash']=page_phash(patch, hash_size=8, border_crop_pct=kwargs.get('border_crop_pct',0))
         features['border_crop_pct']=kwargs.get('border_crop_pct',0) #I need to store the parameter to ensure the images to match will be processed in the same way
     if 'orb' in to_compute:
-        orb = cv2.ORB_create(nfeatures=2000) #the patch should be grayscaled (it is since i expect it also for phash)
+        nfeatures=kwargs.get('orb_nfeatures',2000)
+        edgeThreshold=kwargs.get('orb_edgeThreshold',31)
+        patchSize=kwargs.get('orb_patchSize',31)
+        fastThreshold=kwargs.get('orb_fastThreshold',20)
+        orb = cv2.ORB_create(nfeatures=nfeatures,fastThreshold=fastThreshold,edgeThreshold=edgeThreshold, patchSize=patchSize)
         kp, des = orb.detectAndCompute(patch, None)
         features['orb_kp']=serialize_keypoints(kp)
         features['orb_des']=des
+        features['orb_args'] = {
+            'orb_nfeatures': nfeatures,
+            'orb_edgeThreshold': edgeThreshold,
+            'orb_patchSize': patchSize,
+            'orb_fastThreshold': fastThreshold
+        }
     if verbose:
         _t1 = perf_counter()
         print(f"extract_features_from_patch: mode={mode} time={( _t1 - _t0 ):0.6f}s")
