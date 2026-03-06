@@ -26,7 +26,7 @@ from src.utils.matching_utils import pre_load_image_properties, initialize_page_
 from src.utils.matching_utils import initialize_sorting_dictionaries, pre_load_selected_templates, perform_template_matching
 from src.utils.matching_utils import perform_phash_matching, perform_ocr_matching, ordering_scheme_base, perform_orb_matching
 
-from src.utils.alignment_utils import compute_misalignment, roi_blank_decision, adjust_boundary_boxes, orb_matching,convert_to_axis_aligned_box
+from src.utils.alignment_utils import compute_misalignment, roi_blank_decision, adjust_boundary_boxes, orb_matching,convert_to_axis_aligned_box,is_geometry_valid
 
 from src.utils.censor_utils import map_to_smallest_containing, save_as_is_no_censoring, get_transformation_from_dictionaries, apply_transformation_to_boxes, save_censored_image, map_to_all_containing
 
@@ -46,7 +46,7 @@ TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_te
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
 # other variables
-QUESTIONNAIRE = "5"
+QUESTIONNAIRE = "13"
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
 #SAVE_ANNOTATED_TEMPLATES=True
@@ -58,8 +58,8 @@ WARNING_CENSORING_COL_NAME = 'Warning_censoring'
 # matching parameters
 N_ALIGN_REGIONS = 2 #minimum number of align boxes needed for matching
 #template matching
-SCALE_FACTOR_MATCHING = 2 # used during page ordering and to compute alignements
-SCALE_FACTOR_RESIZING = 2 # used to correct alignement
+SCALE_FACTOR_MATCHING = 1.5 # used during page ordering and to compute alignements
+SCALE_FACTOR_RESIZING = 1.2 # used to correct alignement
 #matchTemplate
 MATCHING_THRESHOLD = 0.7
 #phash
@@ -75,6 +75,16 @@ MAX_DIST_ORB = 18
 ORB_GOOD_MATCH = 50 #if more than 50 matches then the page/roi is a good match
 ORB_top_n_matches = 50 # how many matches to keep for alignement
 ORB_match_threshold = 10
+ORB_method_to_find_matches= 'knn' #'brute_force' #knn
+ORB_match_filtering_method= 'lowe_ratio' #"best_n" #"lowe_ratio"
+ORB_lowe_threshold=0.7
+ORB_parameters={
+    'orb_match_threshold': ORB_match_threshold, 
+    'orb_top_n_matches': ORB_top_n_matches,
+    'orb_lowe_threshold': ORB_lowe_threshold,
+    'orb_match_filtering_method': ORB_match_filtering_method,
+    'orb_method_to_find_matches': ORB_method_to_find_matches
+}
 #white regions
 N_BLACK_THRESH=0.1
 BLANK_REGION_TESTING_THRESHOLD = 1
@@ -83,7 +93,9 @@ BLANK_REGION_TESTING_THRESHOLD = 1
 # extending censor regions to boundaries
 EPSILON_EDGE_MATCHING = 2.0
 # computing alignement
-ALIGNEMENT_METHOD = 'orb_page_level_affine'  # 'pre_computed'# 'orb_page_level_homography', 'orb_page_level_affine'
+ALIGNEMENT_METHOD = 'orb_page_level_homography'  # 'pre_computed'# 'orb_page_level_homography', 'orb_page_level_affine'
+#Checking alignement
+ANGLE_TOLERANCE = 10 #this is the upper limit for the increas in the largest angle of the rectangle after transformation (if it is over 90+angle_tolerange degrees -> not good)
 #correcting after alignement
 RESCALE_CENSOR_WITH = 'template_align_and_extra' #'orb_extra', 'skip_assume_aligned','skip_assume_misaligned'
 #applying alignement
@@ -190,7 +202,7 @@ def main():
         print("\n\n"+"="*50)
         print("Processing ID:", unique_id)
         count+=1
-        if count == 5:
+        if count == 2:
             break
 
         #### LOAD filenames for selected ID #####
@@ -269,8 +281,7 @@ def main():
                                                                                                                                          page_dictionary, template_dictionary, test_log,
                                                                                                                                          file_logger,
                                                                                                                                          method_checking=CHECKING_SECOND_STAGE, 
-                                                                                                                                         orb_match_threshold=ORB_match_threshold, 
-                                                                                                                                         orb_top_n_matches=ORB_top_n_matches)
+                                                                                                                                         orb_parameters=ORB_parameters)
             test_log['problematic_pages_step_2'] = problematic_pages[:]
             test_log['test_passed_step_2'] = test_passed
             #DEBUG
@@ -355,11 +366,16 @@ def main():
             test_log[img_id]['selected_alignement_method'] = selected_alignement_method
             scale_factor, shift_x, shift_y, angle_degrees,reference = get_transformation_from_dictionaries(page, template, image_time_logger, 
                                                                                                            scale_factor=SCALE_FACTOR_MATCHING, 
-                                                                                                           method=selected_alignement_method)#orb_page_level_affine
+                                                                                                           method=selected_alignement_method,orb_parameters=ORB_parameters)#orb_page_level_affine
             transformation = {'reference': reference, 'scale_factor': scale_factor, 'shift_x': shift_x, 'shift_y': shift_y, 'angle_degrees': angle_degrees}
+            
+            ##### CHECK THAT COMPUTED TRANSFORMATION IS GOOD ####
+            flag,error = is_geometry_valid(test_w=100,test_h=100, transformation=transformation, angle_tolerance=ANGLE_TOLERANCE)
+            test_log[img_id]['valid_geometry_for_transformation'] = flag
+            test_log[img_id]['geometry_error'] = error
             test_log[img_id]['alignement_transformation'] = transformation
             # Censor iimage if alignement failed
-            if scale_factor is 'failure':
+            if (np.isscalar(scale_factor) and scale_factor == -1) or (flag==False): 
                 test_log[img_id]['is_failure'] = True
                 test_log[img_id]['censored_with_large_boxes'] = True
                 censor_boxes,partial_coverage = get_censor_boxes(root,matched_id) #we need to refer to the correct id of the template
@@ -903,6 +919,8 @@ def initialize_warning_log(pages_in_annotation):
                 'selected_alignement_method': None, #should be the global one or homography if warning_ocr is True
                 'alignement_transformation': None,
                 'is_failure': False, 
+                'valid_geometry_for_transformation': None,  #if false the transformation check was not passe -> (eg orb page matching failed)
+                'geometry_error': None,
                 # is the page censored with the large censor boxes in the end?
                 'censored_with_large_boxes': False,
                 # adjust transformation part

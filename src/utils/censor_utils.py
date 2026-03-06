@@ -85,7 +85,7 @@ def get_transformation_to_match_to_template(page, root, pre_computed, img, img_s
     image_time_logger.call_end('compute_transformation')
     return scale_factor, shift_x, shift_y, angle_degrees,reference
 
-def get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=2, method = 'pre_computed'):
+def get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=2, method = 'pre_computed',**kwargs):
 
     if page['shifts'] is None:#if the method is pre_computed but matching with template regions
         #was not possible in the first phase i need to backup to a weaker methods
@@ -121,15 +121,26 @@ def get_transformation_from_dictionaries(page, template, image_time_logger, scal
             compute_method = "affine"
         else:
             compute_method = "homography"
+        
+        orb_parameters = kwargs.get('orb_parameters',{})
+        orb_nfeatures = orb_parameters.get('orb_nfeatures',2000)
+        orb_match_threshold = orb_parameters.get('orb_match_threshold',10)
+        orb_top_n_matches = orb_parameters.get('orb_top_n_matches',50)
+        orb_method_to_find_matches = orb_parameters.get('orb_method_to_find_matches','brute_force')
+        orb_match_filtering_method = orb_parameters.get('orb_match_filtering_method',"best_n")
+        lowe_threshold=orb_parameters.get("orb_lowe_threshold",0.7)
         is_matched, _,shift_x, shift_y, scale_factor, angle_degrees = orb_matching(img=None,box=None,template_properties=None, 
                                                                                  image_kpts=(page_kp,page_des),template_kpts=(template_kp,template_des), 
                                                                                  compute_method=compute_method, 
-                                                                                 shift_wr_tl=(0,0))
+                                                                                 shift_wr_tl=(0,0), orb_nfeatures=orb_nfeatures, 
+                                                                                 match_threshold=orb_match_threshold, top_n_matches=orb_top_n_matches,
+                                                                                 method_to_find_matches=orb_method_to_find_matches, 
+                                                                                 match_filtering_method=orb_match_filtering_method, lowe_threshold=lowe_threshold)
         reference=(0,0)
 
         if not is_matched:
             #if the matching fails i can backup to a simpler method that does not use the template matches
-            return 'failure', None, None, None, None, None
+            return -1, None, None, None, None, None
 
     return scale_factor, shift_x, shift_y, angle_degrees,reference
 
@@ -155,7 +166,7 @@ def enlarge_censor_regions(image_time_logger,img_size,scale_factor,censor_boxes)
     return new_censor_boxes
 
 def save_censored_image(img, censor_boxes, save_path,n_p,n_doc,n_page,warning='00', verbose=False,partial_coverage=None,logger=None,**kwargs):
-    parent_path=os.path.join(save_path, f"{n_p}", f"q_{n_doc}")#, f"censored_page_{n_page}.png")
+    parent_path=os.path.join(save_path, f"{n_p}", f"{n_doc}")#, f"censored_page_{n_page}.png")
     create_folder(parent_path, parents=True, exist_ok=True)
     save_path=os.path.join(parent_path, f"censored_page_w{warning}_{n_page}.png")
     censored_img = censor_image(img, censor_boxes, verbose=verbose,partial_coverage=partial_coverage,logger=logger,**kwargs)

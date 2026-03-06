@@ -49,6 +49,68 @@ def box_to_polygon(coords):
         # Reshape to (number_of_points, 2)
         return coords.reshape(-1, 2).astype(np.float64)
 
+## check alignement distorsions ###
+def get_angle(p1, p2, p3):
+    """Calculates the angle (in degrees) at p2 formed by vectors p2-p1 and p2-p3."""
+    v1 = p1 - p2
+    v2 = p3 - p2
+    
+    # Normalize vectors
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    if norm1 == 0 or norm2 == 0:
+        return 0
+        
+    cosine_angle = np.dot(v1, v2) / (norm1 * norm2)
+    # Clip to avoid float errors outside [-1, 1]
+    angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
+    return np.degrees(angle)
+
+def is_geometry_valid(test_w, test_h, transformation,angle_tolerance=10):
+
+    reference=transformation['reference']
+    scale_factor = transformation['scale_factor']
+    shift_x = transformation['shift_x']
+    shift_y = transformation['shift_y']
+    angle_degrees = transformation['angle_degrees']
+
+    x_origin=reference[0]
+    y_origin=reference[1]
+    coords = [x_origin, y_origin,x_origin+test_w,y_origin+test_h]
+    test_corners = box_to_polygon(coords)
+
+    transformed_corners = apply_transformation(reference,coords, scale_factor, shift_x, shift_y, angle_degrees, inverse=False)
+    
+    
+    # Flatten the points array from (4, 1, 2) to (4, 2)
+    pts = transformed_corners.reshape(4, 2)
+    
+    # 1. Basic Convexity Check
+    if not cv2.isContourConvex(pts.astype(np.int32)):
+        return False, "Non-convex (bow-tie distortion)"
+
+    # 2. Area Consistency Check
+    scanned_area = cv2.contourArea(pts)
+    template_area = test_w * test_h
+    if scanned_area < (template_area * 0.4) or scanned_area > (template_area * 1.6):
+        return False, f"Area error: {scanned_area/template_area:.2f}x size"
+
+    # 3. Angle Check (The 90-degree test)
+    # Indices for the 4 corners: 0, 1, 2, 3
+    # We check the angle at each corner p[i] using neighbors p[i-1] and p[i+1]
+    for i in range(4):
+        p1 = pts[i - 1]          # Previous point
+        p2 = pts[i]              # Current corner
+        p3 = pts[(i + 1) % 4]    # Next point
+        
+        angle = get_angle(p1, p2, p3)
+        
+        # Check if the angle is within (90 - tolerance) and (90 + tolerance)
+        if abs(angle - 90) > angle_tolerance:
+            return False, f"Bad angle at corner {i}: {angle:.1f}° (Target: 90°±{angle_tolerance}°)"
+
+    return True, "Success"
+
 ######### Compute misalignment using ALIGN boxes #########
 '''def enlarge_crop_coords(coords, scale_factor=1.2, img_shape=None):
     x_min, y_min, x_max, y_max = coords
@@ -176,11 +238,18 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
         #we expect to find the template at w/2,h/2 in the referece frame of the enlarged patch; If it is cropped we expect to find it at -shift_wr_center
         shift_wr_tl = (coord[0]-new_coord[0], coord[1]-new_coord[1]) #coordinate di top-left corner of the original box in the reference frame of the enlarged patch 
         if metric == "orb":
-            orb_nfeatures=kwargs.get('orb_nfeatures',2000)
-            orb_match_threshold=kwargs.get('orb_match_threshold',10)
-            orb_top_n_matches=kwargs.get('orb_top_n_matches',50)
+            orb_parameters = kwargs.get('orb_parameters',{})
+            orb_nfeatures = orb_parameters.get('orb_nfeatures',2000)
+            orb_match_threshold = orb_parameters.get('orb_match_threshold',10)
+            orb_top_n_matches = orb_parameters.get('orb_top_n_matches',50)
+            orb_method_to_find_matches = orb_parameters.get('orb_method_to_find_matches','brute_force')
+            orb_match_filtering_method = orb_parameters.get('orb_match_filtering_method',"best_n")
+            lowe_threshold=orb_parameters.get("orb_lowe_threshold",0.7)
             is_matched, n_good_matches, shift_x, shift_y, _, _ = orb_matching(filled_png, new_coord, pre_computed_template[i], shift_wr_tl,top_n_matches=orb_top_n_matches, 
-                                                                              orb_nfeatures=orb_nfeatures, match_threshold=orb_match_threshold)
+                                                                              orb_nfeatures=orb_nfeatures, match_threshold=orb_match_threshold, 
+                                                                              method_to_find_matches=orb_method_to_find_matches, 
+                                                                              match_filtering_method=orb_match_filtering_method, 
+                                                                              lowe_threshold=lowe_threshold)
             max_val = n_good_matches
         elif metric == "matchTemplate":
             t_roi = pre_computed_template[i]['full']
@@ -208,7 +277,8 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
 def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,template_kpts=None, 
                  compute_method="center_of_mass",
                  shift_wr_tl=(0,0), 
-                 top_n_matches=50, orb_nfeatures=2000, match_threshold=10):
+                 top_n_matches=50, orb_nfeatures=2000, match_threshold=10,
+                 method_to_find_matches='brute_force',match_filtering_method="best_n",lowe_threshold=0.7):
     #by default i consider that i am comparing patches that are at teh same absolute position in the image (shift_wr_tl=(0,0)) 
     
     if image_kpts is not None and template_kpts is not None:
@@ -257,13 +327,40 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
     if des_image.shape[1] != des_template.shape[1]:
         raise ValueError(f"Error: Descriptor dimension mismatch! {des_image.shape[1]} vs {des_template.shape[1]}")
     
-    
-    # 2. Match features
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-    matches = sorted(bf.match(des_image, des_template), key=lambda x: x.distance)
+    if method_to_find_matches == 'brute_force':
+        # 2. Match features
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+        matches = sorted(bf.match(des_image, des_template), key=lambda x: x.distance)
+    elif method_to_find_matches == 'knn':
+        # 2. FLANN Matcher (faster than Brute Force for large point sets)
+        #FLANN_INDEX_KDTREE = 1
+        #index_params = dict(algorithm=FLANN_INDEX_KDTREE, trees=5)
+        # Use LSH for ORB descriptors
+        index_params = dict(
+            algorithm = 6, # FLANN_INDEX_LSH
+            table_number = 6,      # 12 is also a good choice
+            key_size = 12,         # 20 is also a good choice
+            multi_probe_level = 1  # 2 is better but slower
+        )
+        search_params = dict(checks=50)
+        flann = cv2.FlannBasedMatcher(index_params, search_params)
 
-    # Use only the top 50 matches for stability
-    good_matches = matches[:top_n_matches]
+        # Use knnMatch to get the 2 best matches for each point
+        matches = flann.knnMatch(des_image, des_template, k=2)
+
+    if match_filtering_method == "best_n":
+        # Use only the top 50 matches for stability
+        good_matches = matches[:min(top_n_matches, len(matches))]
+    elif match_filtering_method == "lowe_ratio":
+        # 3. Apply Lowe's Ratio Test
+        # This discards matches where the best and second-best are too similar
+        good_matches = []
+        if len(matches) > 0 :
+            for match_pair in matches:
+                if len(match_pair) == 2:
+                    m, n = match_pair
+                    if m.distance < lowe_threshold * n.distance:
+                        good_matches.append(m)
 
     n_good_matches = len(good_matches)
     is_matched = n_good_matches > match_threshold
@@ -295,7 +392,11 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
             scale = math.sqrt(M[0, 0]**2 + M[1, 0]**2)
             angle = math.atan2(M[1, 0], M[0, 0]) * (180 / math.pi)
         elif compute_method == "homography":
-            M, mask = cv2.findHomography(template_pts, image_pts, cv2.RANSAC, 5.0)
+            M, mask = cv2.findHomography(template_pts, image_pts, cv2.USAC_MAGSAC, 5.0)
+            if M is None:
+                is_matched = False
+            #cv2.USAC_MAGSAC
+            #cv2.RANSAC
             return is_matched, n_good_matches,'homography','homography',M,'homography' #i return the M matrix in place of the scale
         elif compute_method == "center_of_mass":
             # 1. Calculate the 'Center of Mass' of keypoints in both coordinate systems
