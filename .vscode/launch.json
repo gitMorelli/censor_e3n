@@ -163,7 +163,8 @@
             "args": [
                 "--verbose",
                 "--delete_previous_results",
-                "--save_debug_images"
+                "--save_debug_images",
+                "--save_debug_times"
             ]
         },
         // --------------------------------------------- TESTS -------------------------------------------------------------

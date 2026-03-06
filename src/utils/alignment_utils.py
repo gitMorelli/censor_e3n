@@ -92,10 +92,16 @@ def enlarge_crop_coords(box, scale_factor, img_shape):
     #i am giving x,y as img_shape in input
     img_w, img_h = img_shape
     
-    new_x_min = int(max(center_x - new_width / 2, 0))
-    new_y_min = int(max(center_y - new_height / 2, 0))
-    new_x_max = int(min(center_x + new_width / 2, img_w))
-    new_y_max = int(min(center_y + new_height / 2, img_h))
+    dx_min= max(center_x - new_width / 2, 0) - (center_x - new_width / 2) #i compute how much is lost due to the cropping at the edge
+    dy_min= max(center_y - new_height / 2, 0) - (center_y - new_height / 2)
+    dx_max = (center_x + new_width / 2)-min(center_x + new_width / 2, img_w) 
+    dy_max = (center_y + new_height / 2) - min(center_y + new_height / 2, img_h) 
+
+
+    new_x_min = int(max(center_x - new_width / 2 - dx_max, 0)) #i resize nd add to the border the part lost on the other side. Then I crop at the border
+    new_y_min = int(max(center_y - new_height / 2 - dy_max, 0))
+    new_x_max = int(min(center_x + new_width / 2 + dx_min, img_w))
+    new_y_max = int(min(center_y + new_height / 2 + dy_min, img_h))
 
     return (new_x_min, new_y_min, new_x_max, new_y_max)
 
@@ -159,8 +165,12 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
     processed_rois=[]
     confidences=[]
     for i,coord in enumerate(rois):
+        #print("-"*50)
+        #print("before coords enlargement", coord)
+        #print(img_shape)
         center_x, center_y = get_center(coord) #coordinates of the center of the bounding box in the image frame
         new_coord = enlarge_crop_coords(coord, scale_factor=scale_factor, img_shape=img_shape) #new coords are in the absolutre reference frame (image frame)
+        #print("after coords enlargement", new_coord)
         new_center_x, new_center_y = get_center(new_coord) #coordinates of the center of the enlarged box in the image frame
         shift_wr_center = (new_center_x - center_x, new_center_y - center_y) #if the rescaled patch is not cropped 
         #we expect to find the template at w/2,h/2 in the referece frame of the enlarged patch; If it is cropped we expect to find it at -shift_wr_center
@@ -178,6 +188,8 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
                 f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
             else:
                 f_roi = pre_computed_rois[i]
+            #print(f_roi.shape, t_roi.shape)
+            #print("-"*50)
             is_matched,max_val,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,
                                                                     shift_wr_tl=shift_wr_tl,threshold=matching_threshold)
         confidences.append(max_val)

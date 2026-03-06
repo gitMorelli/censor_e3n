@@ -53,10 +53,7 @@ def visualize_templates_w_annotations(annotation_files,annotation_roots,npy_data
             plot_rois_on_image(img, debug_boxes, save_debug_path,colors=colors)
 
 
-def save_w_boxes(save_path,subj_id,doc_ind,matched_id,img,root,pre_computed,logger,which_boxes=['align','transformed'], transformation=None):
-    parent_path=os.path.join(save_path, f"patient_{subj_id}", f"document_{doc_ind}")#, f"censored_page_{n_page}.png")
-    create_folder(parent_path, parents=True, exist_ok=True)
-    save_debug_path=os.path.join(parent_path, f"{matched_id}_original_w_boxes.png")
+def save_w_boxes(save_debug_path,matched_id,img,root,pre_computed,logger,which_boxes=['align','transformed'], transformation=None):
     
     debug_boxes=[]
     box_colors = []
@@ -99,10 +96,7 @@ def save_w_boxes(save_path,subj_id,doc_ind,matched_id,img,root,pre_computed,logg
     else:
         plot_rois_on_image(img, debug_boxes, save_debug_path,colors=box_colors)
 
-def save_these_boxes(filename,save_path,subj_id,doc_ind,matched_id,img,list_of_boxes,list_of_colors=['red']):
-    parent_path=os.path.join(save_path, f"patient_{subj_id}", f"document_{doc_ind}")#, f"censored_page_{n_page}.png")
-    create_folder(parent_path, parents=True, exist_ok=True)
-    save_debug_path=os.path.join(parent_path, f"{matched_id}_{filename}.png")
+def save_these_boxes(save_path,img,list_of_boxes,list_of_colors=['red']):
     
     boxes=[]
     colors=[]
@@ -110,7 +104,7 @@ def save_these_boxes(filename,save_path,subj_id,doc_ind,matched_id,img,list_of_b
         boxes+=list_of_boxes[i]
         colors+=[list_of_colors[i] for j in range(len(list_of_boxes[i]))]
 
-    plot_rois_on_image_polygons(img, boxes, colors=colors, save_path=save_debug_path)
+    plot_rois_on_image_polygons(img, boxes, colors=colors, save_path=save_path)
 
 def superimpose_images(img1_path_or_img, img2_path, output_path,logger ,alpha=0.5, threshold_val=200):
     '''superimpose two images and shows the second one in red

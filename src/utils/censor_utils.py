@@ -116,7 +116,7 @@ def get_transformation_from_dictionaries(page, template, image_time_logger, scal
             page_kp=deserialize_keypoints(pre_comp['orb_kp'])
         else:
             page_des = page['orb']
-            page_kp = deserialize_keypoints(page['orb_kp'])
+            page_kp = page['orb_kp']
         if method == 'orb_page_level_affine':
             compute_method = "affine"
         else:

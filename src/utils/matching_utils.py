@@ -277,7 +277,7 @@ def match_pages_text(pages_list,templates_to_consider,similarity, compute_report
         matches.append({
             "page_index": pages_list[i],
             "template_index": templates_to_consider[j],
-            "similarity": int(cost[i, j]),
+            "similarity": int(-1*(cost[i, j]-1)), # i invert again the formula to get the similarity
         })
     
     if compute_report:
@@ -576,11 +576,14 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
     else:
         matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
     for match in matches_sorted:
+        #cost is - the number of good matches
         img_id = match["page_index"] 
         t_id = match["template_index"]
+        similarity_score = match["similarity"]
         template_dictionary[t_id]['final_match']=img_id 
         page_dictionary[img_id]['matched_page']=t_id
         page_dictionary[img_id]['match_ocr']=t_id
+        page_dictionary[img_id]['confidence_template'] = similarity_score
     if compute_report:
          return template_dictionary, page_dictionary, report
     return template_dictionary, page_dictionary

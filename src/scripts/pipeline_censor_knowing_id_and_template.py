@@ -4,10 +4,13 @@ import logging
 import os
 from time import perf_counter
 from pathlib import Path
+import sys
 
 import pandas as pd
 import numpy as np
 import cv2
+from pympler import asizeof
+import psutil
 
 from src.utils.convert_utils import process_pdf_files
 #from src.utils.convert_utils import pdf_to_png_images
@@ -42,39 +45,62 @@ CSV_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$
 TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_template"#additional"#100263_template"
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
-
+# other variables
 QUESTIONNAIRE = "5"
+ID_COL = 'e3n_id_hand'
+FILENAME_COL = 'object_name'
+#SAVE_ANNOTATED_TEMPLATES=True
+#additional cols
+USED_COL = 'Used'
+WARNING_ORDERING_COL_NAME = 'Warning_ordering'
+WARNING_CENSORING_COL_NAME = 'Warning_censoring'
+
+# matching parameters
 N_ALIGN_REGIONS = 2 #minimum number of align boxes needed for matching
-SCALE_FACTOR_MATCHING = 2
+#template matching
+SCALE_FACTOR_MATCHING = 2 # used during page ordering and to compute alignements
+SCALE_FACTOR_RESIZING = 2 # used to correct alignement
+#matchTemplate
+MATCHING_THRESHOLD = 0.7
+#phash
 GAP_THRESHOLD_PHASH = 5
 MAX_DIST_PHASH = 18
+#ocr
+GAP_THRESHOLD_OCR = 0.1
+MAX_DIST_OCR = 0.2
 TEXT_SIMILARITY_METRIC = 'similarity_jaccard_tokens'
-FILENAME_COL = 'object_name'
-ID_COL = 'e3n_id_hand'
-USED_COL = 'Used'
-ORB_GOOD_MATCH = 50
-MATCHING_THRESHOLD = 0.7
+#orb
+GAP_THRESHOLD_ORB = 5 # i shoudl modify this and the other value (i fixed to the same value as phash but makes no sense)
+MAX_DIST_ORB = 18
+ORB_GOOD_MATCH = 50 #if more than 50 matches then the page/roi is a good match
+ORB_top_n_matches = 50 # how many matches to keep for alignement
+ORB_match_threshold = 10
+#white regions
 N_BLACK_THRESH=0.1
 BLANK_REGION_TESTING_THRESHOLD = 1
-EPSILON_EDGE_MATCHING = 2.0
-THICKNESS_PCT = 0.2
-SPACING_MULT = 0.5
-ORB_top_n_matches = 50
-ORB_match_threshold = 10
-SAVE_ANNOTATED_TEMPLATES=True
 
+# pipeline parameters
+# extending censor regions to boundaries
+EPSILON_EDGE_MATCHING = 2.0
+# computing alignement
+ALIGNEMENT_METHOD = 'orb_page_level_affine'  # 'pre_computed'# 'orb_page_level_homography', 'orb_page_level_affine'
+#correcting after alignement
+RESCALE_CENSOR_WITH = 'template_align_and_extra' #'orb_extra', 'skip_assume_aligned','skip_assume_misaligned'
+#applying alignement
 TRANSFORMATION_OPTION = 'standard'#'no_rotation' #options are 'no_rotation', 'standard'
 FORCE_AXIS_ALIGNED_BOXES = True #if false the censor boxes are rotated after alygnemetn -> they are polygon; If true the smallest 
 #rectangle that is axi aligned and contains the polygon is drawn instead
-ALIGNEMENT_METHOD = 'pre_computed'# 'orb_page_level_homography', 'orb_page_level_affine'
+# page ordering
 CHECKING_FIRST_STAGE = 'template' #options are 'template' or 'orb'
-SCALE_FACTOR_RESIZING = 1.5
-RESCALE_CENSOR_WITH = 'template_align_and_extra' #'orb_extra', 'skip'
-
+CHECKING_SECOND_STAGE = 'orb' #options are 'template' or 'orb'
+#censoring (sriped regions)
+THICKNESS_PCT = 0.2
+SPACING_MULT = 0.5
 
 def main():
     args = parse_args()
 
+    ####### INITIALIZING PATHS #########
     templates_path = args.templates_path
     pdf_load_path = args.pdf_load_path
     csv_load_path = args.csv_load_path
@@ -82,62 +108,68 @@ def main():
     save_debug_times=args.save_debug_times
     save_debug_images=args.save_debug_images
 
+    #folder for the csv table
     updated_csv_paths = os.path.join(save_path,"ref_pdf")
+    #folder for the global logging
     log_path=os.path.join(save_path,'logs')
-    debug_images_path=os.path.join(save_path,'debug_images')
-    debug_images_templates_path=os.path.join(save_path,'debug_images_templates')
-    debug_images_original_path=os.path.join(debug_images_path,'original')
-    debug_images_w_boxes_path=os.path.join(debug_images_path,'original_w_boxes')
-    debug_images_superimposed=os.path.join(debug_images_path,'superimposed')
+    #folder per il debug
+    debug_path = os.path.join(save_path,'debug')
+    #names for debug subfolders
+    debug_images_name='debug_images\\'
+    debug_images_templates_name=debug_images_name+'debug_images_templates'
+    debug_images_original_name=debug_images_name+'original'
+    debug_images_w_boxes_name=debug_images_name+'original_w_boxes'
+    debug_images_superimposed_name=debug_images_name+'superimposed'
+    debug_images_adjusted_boxes = debug_images_name+'adjusted_for_boundaries'
+    time_logs_name = 'time_logs'
+    debug_temporary_name = 'debug_temporary'
+    #load path for the pdfs
     questionnairres_log_path=os.path.join(pdf_load_path, f"Q{QUESTIONNAIRE}")
-    time_logs_path = os.path.join(log_path,'time_logs')
-    results_path = os.path.join(save_path,'results')
+    #temlates path
     template_images_path = "//vms-e34n-databr/2025-handwriting\\data\\e3n_templates_png\\current_template"
+    #saving the censored images here
     censored_images_path = os.path.join(save_path,'censored_images')
-    debug_temporary_path = os.path.join(save_path,'debug_temporary')
 
 
-    #i clean the folders from previous results
+    ####### CLEANING FOLDERS (only in debugging) ###########
     if args.delete_previous_results:
         if os.path.exists(updated_csv_paths):
             remove_folder(updated_csv_paths)
         if os.path.exists(log_path):
             remove_folder(log_path)
-        if os.path.exists(debug_images_path):
-            remove_folder(debug_images_path)
-        if os.path.exists(results_path):
-            remove_folder(results_path)
         if os.path.exists(censored_images_path):
             remove_folder(censored_images_path)
-        if os.path.exists(debug_temporary_path):
-            remove_folder(debug_temporary_path)
+        if os.path.exists(debug_path):
+            remove_folder(debug_path)
     
-    if args.verbose:
-        #console logger
-        logger.setLevel(logging.DEBUG)
-        logging.getLogger().setLevel(logging.DEBUG)
-        #file logger
-        create_folder(log_path, parents=True, exist_ok=True)
-        file_logger=FileWriter(enabled=True,path=os.path.join(log_path,f"global_logger.txt"))
-        # create folder to save debug images
-        create_folder(debug_images_path, parents=True, exist_ok=True)
-        create_folder(debug_temporary_path, parents=True, exist_ok=True)
+    ########## Initializing loggers ##################
+    #console logger
+    logger.setLevel(logging.DEBUG)
+    logging.getLogger().setLevel(logging.DEBUG)
+    #file logger (global logger for the execution)
+    create_folder(log_path, parents=True, exist_ok=True)
+    file_logger=FileWriter(enabled=args.verbose,path=os.path.join(log_path,f"global_logger.txt"))
+    #memory logger (global logger for the execution)
+    memory_logger=FileWriter(enabled=args.verbose,path=os.path.join(log_path,f"memory_logger.txt"))
+    #memory logger (global logger for the execution)
+    global_time_logger=FileWriter(enabled=args.verbose,path=os.path.join(log_path,f"global_time_logger.txt"))
+    # create folder to save debug results
+    create_folder(debug_path, parents=True, exist_ok=True)
 
+    ########## LOAD the DATFRAME with the subject ids and filenames ###############
     csv_modified_path = os.path.join(updated_csv_paths,f"updated_ref_pdf_Q{QUESTIONNAIRE}.csv")
     if os.path.exists(csv_modified_path)==False: #if the csv has not been preprocessed yet
-        df = preprocess_df(os.path.join(csv_load_path,f"ref_pdf_Q{QUESTIONNAIRE}.csv"),FILENAME_COL, ID_COL,USED_COL)
+        df = preprocess_df(os.path.join(csv_load_path,f"ref_pdf_Q{QUESTIONNAIRE}.csv"),FILENAME_COL, ID_COL,USED_COL,WARNING_ORDERING_COL_NAME,WARNING_CENSORING_COL_NAME)
         create_folder(updated_csv_paths, parents=True, exist_ok=True)
         df.to_csv(csv_modified_path)
     
     df = load_preprocessed_df(csv_modified_path,used_col_name=USED_COL,id_col_name=ID_COL) #load the preprocessed df
-
     file_logger.write(df.head(10).to_string()) #log the first 10 lines of the df to check it is correct
 
     #load the annotation files (full paths and names)
     annotation_file_names, annotation_files = load_annotation_tree(file_logger, templates_path)
     #i select only the template of interest (eg for Q5 only doc_5.json)
     selected_templates = select_specific_annotation_file(QUESTIONNAIRE)
-
     file_logger.write(selected_templates)
 
     # I open the jsons for the selected templates and save them in a list, i also open the corresponding pre_computed data
@@ -147,86 +179,78 @@ def main():
     
     pages_in_annotation = get_page_list(annotation_roots[0]) #is the same for both templates in Q1 case 
     #so i can just take it from the first one
-
     file_logger.write(pages_in_annotation)
 
     # Group by the 'id' column and iterate over each group
     count=0
     for unique_id, group in df.groupby(ID_COL):
+        ######## PAGE SORTING ##############
+
+        #DEBUG
         print("\n\n"+"="*50)
         print("Processing ID:", unique_id)
         count+=1
-        if count == 2:
+        if count == 5:
             break
 
+        #### LOAD filenames for selected ID #####
         filenames = group[FILENAME_COL].tolist()
         # i sort the filenames by name (expected page ordering is absed on alphabetical ordering)
-        filenames.sort()  # eg ordered as k,l,m,n
+        filenames.sort()  
         #checks both for .pdf and for .tif.pdf
         pdf_paths = get_file_paths(filenames,questionnairres_log_path,file_logger) 
-
         file_logger.write(filenames)
         #file_logger.write(pdf_paths)
 
-        # I want to find the best match for the 
-        # load dictionary to store warning messages on pages
-        test_log = {'doc_level_warning':None,
-                    'Choosen template': QUESTIONNAIRE,
-                    'Confidence on template choice': None,
-                    'report_orb': None ,
-                    'report_ocr': None, 
-                    'report_phash': None}
-        for p in pages_in_annotation:
-            test_log[p]={'failed_test_1': False, 'template_1': None, 'confidences_template_1': None,
-                        'failed_test_2': False, 'orb': None, 'template_2': None, 'confidences_template_2': None,
-                        'OCR_WARNING': None, 'OCR': None,
-                        'page_level_warning': None,
-                        'alingement_report': None, 
-                        'roi_and_blank_before' : None, 'roi_and_blank_after' : None}
+        test_log = initialize_warning_log(pages_in_annotation)
 
         #i extract the images and order them based on the expeected ordering
         #in some cases pdf_paths is a single multipage pdfs in others are multiple one page pdfs files
         list_of_images, test_log = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False, test_log=test_log)
 
-        #TEST, remove after, disorder the pages 
+        #DEBUG, remove after, disorder the pages 
         #new_order=[3,2,1,0]
         #list_of_images = [list_of_images[i] for i in new_order] 
-
         #DEBUG
         if save_debug_images:
-            save_list_of_images(list_of_images, debug_images_original_path, unique_id, args.verbose)
+            save_list_of_images(list_of_images, debug_path, debug_images_original_name,unique_id, args.verbose)
 
-        
+        #### GET correct template for Q1 (uses phash)#####
         #i select the annotation root and npy data corresponding to the correct template 
         # #(in Q1 case i have two templates, in the other cases only one so it is straightforward)
         report,selected_template_index,selected_confidence, root , npy_dict = select_template(pages_in_annotation,QUESTIONNAIRE,
         annotation_roots,npy_data, list_of_images, file_logger) 
-
         if report:
             test_log['Choosen template'] = selected_templates[selected_template_index]
             test_log['Confidence on template choice'] = selected_confidence
-            test_log['report_phash'] = report
-        
+            test_log['report_template_choice'] = report
         file_logger.write(selected_templates[selected_template_index])
         file_logger.write(report)
         
-        #initialize the dictionaries i will use to store info on the sorting process
+        #### DICTIONARY INITIALIZATION ####
         #i should avoid to re-initialize if q1 (but i spare a negligible amount of time)
         page_dictionary,template_dictionary = initialize_sorting_dictionaries(list_of_images, root, input_from_file=False)
         #i will consider all template pages from the beginning and all images of course
         templates_to_consider = pages_in_annotation[:]
         pages_to_consider = [i+1 for i in range(len(list_of_images))]
-
         #pre_load_template_info
         template_dictionary = pre_load_selected_templates(templates_to_consider,npy_dict, 
                                                           root, template_dictionary)
+        #DEBUG
+        total_bytes = get_deep_size(template_dictionary)
+        memory_logger.write(f"Current memory usage: {get_process_memory():.2f} MB")
+        memory_logger.write(f"Total deep size of template_dictionary: {total_bytes/ 1024:.2f} kbytes")
         
-        #check with pages were not matched
+        ##### CHECK if PAGES MATCH expected ORDER (can choose orb or template matchign) #########
+        global_time_logger.call_start("page_sorting_stage_1")
         test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates = perform_first_stage_check(pages_to_consider, templates_to_consider, 
                                                                                                                                          page_dictionary, template_dictionary, test_log,
                                                                                                                                          file_logger, 
                                                                                                                                          method_checking=CHECKING_FIRST_STAGE)
-        #debug
+        global_time_logger.call_end("page_sorting_stage_1")
+        test_log['problematic_pages_step_1'] = problematic_pages[:]
+        test_log['test_passed_step_1'] = test_passed
+        #DEBUG
         for img_id in pages_to_consider:
             page = page_dictionary[img_id]
             shifts = page['shifts']
@@ -236,6 +260,7 @@ def main():
 
         
         if not test_passed: 
+            ##### SORT PAGES (with orb or phash) AND then CHECK if PAGES MATCH expected ORDER (can choose orb or template matchign) #########
             #sort with orb matching and check if the association is correct via template matching
             #pre_load orb keypoints for images
             page_dictionary = pre_load_image_properties(problematic_pages,page_dictionary,
@@ -243,52 +268,61 @@ def main():
             test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates = perform_second_stage_check(problematic_pages, problematic_templates, 
                                                                                                                                          page_dictionary, template_dictionary, test_log,
                                                                                                                                          file_logger,
-                                                                                                                                         method_checking='orb', 
+                                                                                                                                         method_checking=CHECKING_SECOND_STAGE, 
                                                                                                                                          orb_match_threshold=ORB_match_threshold, 
                                                                                                                                          orb_top_n_matches=ORB_top_n_matches)
-            
+            test_log['problematic_pages_step_2'] = problematic_pages[:]
+            test_log['test_passed_step_2'] = test_passed
+            #DEBUG
             file_logger.write(f"problematic pages step 2: {problematic_pages}")
             file_logger.write(f"test passed 2: {test_passed}")
-
             debug_print_associations(pages_to_consider,page_dictionary,file_logger)
         
             if not test_passed:
-                #sort with ocr matching 
+                ###### SORT PAGES WITH OCR #########
                 template_dictionary, page_dictionary, report = perform_ocr_matching(problematic_pages,problematic_templates, 
-                                                        page_dictionary, template_dictionary,text_similarity_metric=TEXT_SIMILARITY_METRIC, compute_report=True)
+                                                        page_dictionary, template_dictionary,text_similarity_metric=TEXT_SIMILARITY_METRIC, compute_report=True,
+                                                        gap_threshold=GAP_THRESHOLD_OCR, max_dist=MAX_DIST_OCR)
                 #update the test log with the ocr results
                 for img_id in problematic_pages:
-                    test_log[img_id]['OCR'] = page_dictionary[img_id]['match_ocr']
+                    test_log[img_id]['matched_ocr'] = page_dictionary[img_id]['match_ocr']
+                    test_log[img_id]['confidences_ocr'] = page_dictionary[img_id]['confidence_template'] 
+                    #i give a warning if the match computed with ocr is  below the threshold
+                    test_log[img_id]['warning_ocr'] = -1*test_log[img_id]['confidences_ocr']+1>MAX_DIST_OCR #i convert back to the cost for comparing with the threshold
+                    #i give a warnign if the cost is over the maximum cost defined by the threshold
                 test_log['report_ocr'] = report
-
                 debug_print_associations(pages_to_consider,page_dictionary,file_logger)
         
-        # now we censor the pages
+        ########## PAGE CENSORING ##########
         for img_id in pages_to_consider:
 
+            ### load image properties and ignore those non matched ######
             page = page_dictionary[img_id]
             matched_id = page['matched_page']
+            test_log[img_id]['matched_template_final'] = matched_id
             template = template_dictionary[matched_id]
-
-            #create time logger for the current page
-            patient_time_log_path=os.path.join(time_logs_path, f"patient_{unique_id}", QUESTIONNAIRE)
-            create_folder(patient_time_log_path, parents=True, exist_ok=True)
-            image_time_logger=FileWriter(save_debug_times,
-                                            os.path.join(patient_time_log_path,f"time_logger_page_{matched_id}.txt"))
-
             if matched_id == None:
-                test_log[img_id]['page_level_warning'] = "Page not matched with any template page, it will be ignored"
+                test_log[img_id]['not_matched_ignored'] = True
                 continue
-
             img_size = page['img_size']
-            template_size = template_dictionary[matched_id]['template_size']
+            #template_size = template_dictionary[matched_id]['template_size']
             img=page['img'] #all pages are already loaded
 
+            #DEBUG
+            #create time logger for the current page
+            patient_time_log_path=os.path.join(debug_path, f"{unique_id}", QUESTIONNAIRE,time_logs_name)
+            create_folder(patient_time_log_path, parents=True, exist_ok=True)
+            image_time_logger=FileWriter(save_debug_times,os.path.join(patient_time_log_path,f"page_{matched_id}.txt"))
+
+            #### DEAL WITH PAGES NOT TO CENSOR (and special questionnairres?) ###### 
             if template['type']=='N':
                 file_logger.write(f"Page {img_id} considered as N, no censoring applied, saved as is")
-                save_as_is_no_censoring(file_logger,image_time_logger,img_id,page_dictionary,dest_folder=results_path,
+                save_as_is_no_censoring(file_logger,image_time_logger,img_id,page_dictionary,dest_folder=censored_images_path,
                                         n_p=unique_id,n_doc=QUESTIONNAIRE,n_page=matched_id)
+                test_log[img_id]['not_to_censor_ignored'] = True
+                continue
             
+            #### load pre_computed data and boxes #######
             pre_computed = npy_dict[matched_id]
             roi_boxes, pre_computed_rois = get_roi_boxes(root,pre_computed,matched_id) #first one is the extra roi, second one is the blank
             #prev_values = check_blank_and_extra(roi_boxes, pre_computed_rois, page, img_size) #uncomment if you want to use the roi for template matching and the blank for checking
@@ -297,141 +331,79 @@ def main():
             # I preprocess the censor regions to extend their dimensions to page limits
             censor_boxes,partial_coverage = get_censor_boxes(root,matched_id) #we need to refer to the correct id of the template
             censor_close_boxes,_ = get_censor_close_boxes(root,matched_id)
-            censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING) 
-            #should i apply the scale factor  to the page dimension or rescale everything 
-            #together later?
-            #if save_debug_images:
-             #   censor_close_adjusted_img = save_these_boxes("censor_close",debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,censor_close_boxes,color='red')
-            #print(len(censor_boxes), len(censor_close_boxes), matched_id)
 
-            #i get the parameters needed for the alignement of the page
+            #DEBUG (superimposed images)
+            if save_debug_images:
+                img2_path = os.path.join(template_images_path, f"q_{QUESTIONNAIRE}",f"page_{matched_id}.png")
+                output_path = os.path.join(debug_path, unique_id, f"{QUESTIONNAIRE}", debug_images_superimposed_name,f"page_{matched_id}.png")
+                create_folder(os.path.dirname(output_path), parents=True, exist_ok=True)
+                superimpose_images(img, img2_path, output_path,file_logger)
+
+            ##### ADJUST LARGE CENSOR BOXES TO PAGE LIMITS ###### 
+            if save_debug_images:
+                adjusted_censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING)
+                output_path = os.path.join(debug_path, unique_id, f"{QUESTIONNAIRE}", debug_images_adjusted_boxes,f"page_{matched_id}.png")
+                create_folder(os.path.dirname(output_path), parents=True, exist_ok=True)
+                save_these_boxes(output_path,img,[censor_boxes,adjusted_censor_boxes],list_of_colors=['red','green'])
+            censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING)
+
+            ###### COMPUTE TRANSFORMATION PARAMETERS FOR ALIGNEMENT ######
+            selected_alignement_method = ALIGNEMENT_METHOD
+            if test_log[img_id]['warning_ocr']:
+                selected_alignement_method = 'orb_page_level_homography' #i force this method because in this case i cannot rely on align regions (were not matched)
+                file_logger.write(f"Warning for page {img_id} because OCR matching confidence is low, alignement will be computed with orb_page_level_homography")
+            test_log[img_id]['selected_alignement_method'] = selected_alignement_method
             scale_factor, shift_x, shift_y, angle_degrees,reference = get_transformation_from_dictionaries(page, template, image_time_logger, 
                                                                                                            scale_factor=SCALE_FACTOR_MATCHING, 
-                                                                                                           method=ALIGNEMENT_METHOD)#orb_page_level_affine
-            alignement_report = {'scale_factor': scale_factor, 'shift_x': shift_x, 'shift_y': shift_y, 'angle_degrees': angle_degrees}
-
+                                                                                                           method=selected_alignement_method)#orb_page_level_affine
             transformation = {'reference': reference, 'scale_factor': scale_factor, 'shift_x': shift_x, 'shift_y': shift_y, 'angle_degrees': angle_degrees}
-
-            if scale_factor == 'failure':
+            test_log[img_id]['alignement_transformation'] = transformation
+            # Censor iimage if alignement failed
+            if scale_factor is 'failure':
+                test_log[img_id]['is_failure'] = True
+                test_log[img_id]['censored_with_large_boxes'] = True
                 censor_boxes,partial_coverage = get_censor_boxes(root,matched_id) #we need to refer to the correct id of the template
                 #in this case i censor with the extended regions because i cannot be sure of the alignement in any way
                 save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
-                                    warning=warning_string,partial_coverage=partial_coverage,
+                                    warning='',partial_coverage=partial_coverage,
                                     thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)   
-            
-            #DEBUG
-            if save_debug_images:
-                save_w_boxes(debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,root,
-                             pre_computed,image_time_logger,which_boxes=['align','roi','censor','censor_close'], transformation=None)
-            
+                continue
             #DEBUG
             #force parameters of alingement to debug
             #scale_factor=1.0
             #angle_degrees=0.0
             #shift_x*=-1
             #shift_y*=-1
-
-            #debug
+            file_logger.write(f"Alignement parameters for page {matched_id}: {transformation}")
             if save_debug_images:
-                img2_path = os.path.join(template_images_path, f"q_{QUESTIONNAIRE}",f"page_{matched_id}.png")
-                output_path = os.path.join(debug_images_superimposed, unique_id, f"q_{QUESTIONNAIRE}", f"page_{matched_id}_superimposed.png")
+                #save_w_boxes(debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,root,
+                 #            pre_computed,image_time_logger,which_boxes=['align','roi','censor','censor_close'], transformation=None)
+                output_path = os.path.join(debug_path, unique_id, f"{QUESTIONNAIRE}", debug_images_w_boxes_name,f"page_{matched_id}.png")
                 create_folder(os.path.dirname(output_path), parents=True, exist_ok=True)
-                superimpose_images(img, img2_path, output_path,file_logger)
-
-            #DEBUG
-            file_logger.write(f"Alignement parameters for page {matched_id}: {alignement_report}") 
-            if save_debug_images:
-                save_w_boxes(debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,matched_id,img,root,
+                save_w_boxes(output_path,matched_id,img,root,
                              pre_computed,image_time_logger,which_boxes=['align','roi','censor','censor_close','transformed'], transformation=transformation)
 
-            if RESCALE_CENSOR_WITH == 'orb_extra':
-                new_roi_boxes = apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, 
-                                                                    shift_x, shift_y, angle_degrees,name='roi',option=TRANSFORMATION_OPTION) #you can set no_rotation
-                #new_values = check_blank_and_extra(new_roi_boxes, pre_computed_rois, page, img_size) #uncomment if you want to use the roi for template matching and the blank for checking
-                # I check alignement on the extra roi with orb matching
-                is_match, n_matches_orb,extra_shift_x, extra_shift_y, extra_scale, extra_angle = orb_matching(img,new_roi_boxes[0],pre_computed_rois[0], shift_wr_tl = (0,0),
-                                                                                                    top_n_matches=ORB_top_n_matches, match_threshold=ORB_match_threshold)
-            
-            elif RESCALE_CENSOR_WITH == 'template_align_and_extra':
-                check_boxes = align_boxes + [roi_boxes[0]] 
-                check_pre_computed = pre_computed_align + [pre_computed_rois[0]]
-                check_boxes = apply_transformation_to_boxes(check_boxes, image_time_logger, reference, scale_factor, 
-                                                                    shift_x, shift_y, angle_degrees,name='check',option=TRANSFORMATION_OPTION)
-                #axis align
-                check_boxes = convert_to_axis_aligned_box(check_boxes)
-                #print(check_boxes)
-                check_shifts, check_centers,_,check_confidences= compute_misalignment(img, check_boxes, img_size, check_pre_computed, scale_factor=SCALE_FACTOR_RESIZING,
-                            matching_threshold=MATCHING_THRESHOLD, pre_computed_rois=None,return_confidences=True,metric='matchTemplate')
-                extra_shift_x = [shift[0] for shift in check_shifts]
-                extra_shift_y = [shift[1] for shift in check_shifts]
-                extra_angle = 0.0
-                extra_scale = 1.0
-                is_match=True
-                if len(check_shifts) < N_ALIGN_REGIONS: #or N_ALIGN_REGIONS+1 ??
-                    is_match=False
-                #i take the largest and smallest values for shift_x and shift_y
-            
+
+            #### RESCALE CLOSE CENSOR BOXES BASED ON ALIGNEMENT OF THE ROI, for security (with orb or template matching) ######
+            is_match, extra_shift_x, extra_shift_y, extra_scale, extra_angle = rescale_censor_with_alignement(img,img_size,align_boxes,roi_boxes,pre_computed_align,pre_computed_rois,
+                                   transformation,image_time_logger,rescale_censor_with=RESCALE_CENSOR_WITH)
+            extra_transformation = {'extra_shift_x': extra_shift_x, 'extra_shift_y': extra_shift_y, 'extra_scale': extra_scale, 'extra_angle': extra_angle}
+            test_log[img_id]['adjust_transformation'] = extra_transformation
             #DEBUG
             file_logger.write(f"Alignement parameters after orb matching for page {matched_id}: shift_x: {extra_shift_x}, shift_y: {extra_shift_y}, Match: {is_match}")
 
-            '''# i check alignement with template matching
-            check_shifts, check_centers,_,check_confidences= compute_misalignment(img, new_roi_boxes[:1], img_size, pre_computed_rois[:1], scale_factor=SCALE_FACTOR_MATCHING,
-                            matching_threshold=MATCHING_THRESHOLD, pre_computed_rois=None,return_confidences=True)
-            check_match=True
-            if len(check_shifts) < 1:
-                check_match=False
-            file_logger.write(f"Alignement parameters after orb matching for page {matched_id}: 
-                              shift_x: {check_shifts[0][0]}, shift_y: {check_shifts[0][1]}, Match: {check_match}")
-                              '''
 
-
-            # i save the results in the test log
-            #test_log[img_id]['roi_and_blank_before'] = prev_values
-            #test_log[img_id]['roi_and_blank_after'] = new_values
-            test_log[img_id]['alingement_report'] = alignement_report
-            #i compute the warning string to attach to the filename
-            warning_string = ""
-
-            if is_match:
-                #i associate each close box with the container box and create an ordered list of the containers that match the censoring boxes
-                #map_to_container = map_to_smallest_containing(censor_boxes,censor_close_boxes)
-
-                censor_boxes,censor_close_boxes, partial_coverage = map_to_all_containing(censor_boxes,censor_close_boxes,
-                                                                                          partial_coverage, percentage_threshold=0.5) #to deal with multiple censor boxes for one censor-close and vicevers
-                #i create an extanded list with all the censor and censor-close boxes in superposition of more than 0.
-                #i rescale the dimensions of the censor-close boxes
-                new_censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
-                                                                    shift_x, shift_y, angle_degrees,name='censor_close', option=TRANSFORMATION_OPTION)
-                
-                # i can convert back to axis aligned rectangles -> covers more space
-                if FORCE_AXIS_ALIGNED_BOXES:
-                    new_censor_close_boxes = convert_to_axis_aligned_box(new_censor_close_boxes)
-                
-                if RESCALE_CENSOR_WITH != 'skip':
-                    # I enlarge close-censor regions based on alignement results
-                    censor_close_boxes_orb = adjust_close_censor(new_censor_close_boxes,extra_shift_x, extra_shift_y, 
-                                                                 extra_scale, extra_angle, is_aligned=FORCE_AXIS_ALIGNED_BOXES)
-                    if save_debug_images:
-                        save_these_boxes("censor_close_adjusted_pre_post_rescaling",debug_images_w_boxes_path,unique_id,QUESTIONNAIRE,
-                                        matched_id,img,[new_censor_close_boxes,censor_close_boxes_orb,censor_boxes],list_of_colors=['red','green','black'])
-                
-
-                # apply censoring considering the boundary boxes and the close censor boxes
-                save_censored_images_path=os.path.join(censored_images_path, f"{unique_id}", 
-                                                       f"q_{QUESTIONNAIRE}",f"censored_page_w{warning_string}_{matched_id}.png")#, f"censored_page_{n_page}.png")
-                create_folder(os.path.dirname(save_censored_images_path), parents=True, exist_ok=True)
-                censored_img = censor_image_with_boundary(img, censor_close_boxes_orb, censor_boxes, 
-                                                        partial_coverage=partial_coverage,logger=image_time_logger,
-                                                        thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
-                image_time_logger and image_time_logger.call_start(f'writing_to_memory')
-                cv2.imwrite(save_censored_images_path, censored_img)
-                image_time_logger and image_time_logger.call_end(f'writing_to_memory')
-            else:
-                # i censor considering the large regions
-                save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
-                                    warning=warning_string,partial_coverage=partial_coverage,
-                                    thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)    
-
+            ###### CENSOR IMAGES ######   
+            test_log = censor_the_page(is_match, transformation, extra_transformation, censor_boxes, censor_close_boxes, partial_coverage, 
+                    image_time_logger, save_debug_images, debug_path, 
+                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log=test_log, warning_string='', debug_images_name=debug_images_name) # i don't add warning strings to pages
+        
+        #save global and page level warning
+        save_warning_log(test_log, censored_images_path, unique_id, QUESTIONNAIRE)
+        df = update_warning_cols(df,unique_id,test_log,pages_to_consider,id_col=ID_COL,ordering_warning_col=WARNING_ORDERING_COL_NAME,
+                                 censoring_warning_col=WARNING_CENSORING_COL_NAME)
+    #save df
+    # ...
     logger.info("Conversion finished")
     return 0
 
@@ -455,7 +427,7 @@ def initialize_result_df(pdf_names,template_type):
     df['matched_template_page'] = None
     return df
 
-def preprocess_df(source_path,filename_col,id_col,used_col_name='Used'):
+def preprocess_df(source_path,filename_col,id_col,used_col_name='Used',warning_ordering_col_name='Warning_ordering',warning_censoring_col_name='Warning_censoring'):
     df=pd.read_csv(source_path)
     log_filename = 'log_'+get_basename(source_path,remove_extension=True).split('_')[-1]
     log_path = os.path.join(os.path.dirname(source_path),log_filename+'.txt')
@@ -482,7 +454,10 @@ def preprocess_df(source_path,filename_col,id_col,used_col_name='Used'):
     log(f"Before eliminating duplicates the row length is {length_before} after it is {length_after} -> {length_before-length_after} rows were eliminated")
 
     df = df.sort_values(id_col).reset_index(drop=True)
+    #add columns
     df[used_col_name] = False
+    df[warning_ordering_col_name] =''
+    df[warning_censoring_col_name] =''
 
     return df
 
@@ -593,7 +568,6 @@ def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dic
         selected_metric = "matchTemplate"
     elif method_checking == 'orb':
         selected_metric = "orb"
-    test_log['metric_used_step_1']=selected_metric
 
     #perform template_matching and update the matching keys in the dictionaries
     page_dictionary,template_dictionary = perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, metric=selected_metric,
@@ -601,7 +575,7 @@ def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dic
     
     problematic_pages = pages_to_consider[:]
     problematic_templates = templates_to_consider[:]
-    n_matches=0
+    n_matches=0 
     for i in range_to_check:
         img_id = pages_to_consider[i]
         t_id = templates_to_consider[i]
@@ -612,7 +586,7 @@ def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dic
             n_matches+=1
             problematic_pages.remove(img_id)
             problematic_templates.remove(t_id)
-            test_log[img_id]['template_1'] = matched_id_template
+            test_log[img_id]['matched_template_step_1'] = matched_id_template
         else:
             test_log[img_id]['failed_test_1'] = True 
     test_passed=False
@@ -622,22 +596,31 @@ def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dic
     return test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates
 
 #probably i can make more modular by making the "check_with_template_matching" a function that can be used after phash or after orb or others ...
-def perform_second_stage_check(pages_to_consider, templates_to_consider, page_dictionary, template_dictionary, test_log,logger,method_checking='template',**kwargs):
-
-    page_dictionary, report = perform_orb_matching(page_dictionary,template_dictionary, pages_to_consider, templates_to_consider, 
-                            gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH, orb_good_match=ORB_GOOD_MATCH,compute_report=True)
-    test_log['report_orb'] = report
+def perform_second_stage_check(pages_to_consider, templates_to_consider, page_dictionary, template_dictionary, test_log,logger,method_checking='template',method_ordering='orb',**kwargs):
     
     if method_checking == 'template':
         selected_metric = "matchTemplate"
     elif method_checking == 'orb':
         selected_metric = "orb"
-    test_log['metric_used_step_2']=selected_metric
+
+    if method_ordering == 'orb':
+        key_to_check = 'match_orb'
+    elif method_ordering == 'phash':
+        key_to_check = 'match_phash'
+
+    if method_ordering == 'orb':
+        page_dictionary, report = perform_orb_matching(page_dictionary,template_dictionary, pages_to_consider, templates_to_consider, 
+                                gap_threshold=GAP_THRESHOLD_ORB,max_dist=MAX_DIST_ORB, orb_good_match=ORB_GOOD_MATCH,compute_report=True)
+        test_log['report_sorting_step_2'] = report
+    elif method_ordering == 'phash':
+        page_dictionary, report = perform_phash_matching(page_dictionary,template_dictionary, pages_to_consider, templates_to_consider, 
+                            gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH, compute_report=True)
+        test_log['report_sorting_step_2'] = report
 
     #i test if the pages are already in place
     pairs_to_consider = []
     for img_id in pages_to_consider: 
-        orb_matched_id = page_dictionary[img_id]['match_orb']
+        orb_matched_id = page_dictionary[img_id][key_to_check]
         #print(orb_matched_id)
         pairs_to_consider.append([img_id,orb_matched_id])
 
@@ -653,14 +636,13 @@ def perform_second_stage_check(pages_to_consider, templates_to_consider, page_di
         img_id = pairs_to_consider[i][0]
         orb_match = pairs_to_consider[i][1]
         matched_id_template = page_dictionary[img_id]['matched_page']
-        test_log[img_id]['orb'] = orb_match
         logger.write(f"Checking page {img_id} against template {orb_match}: matched with template {matched_id_template} with confidence {page_dictionary[img_id]['confidence_template']}")
         test_log[img_id]['confidences_template_2'] = page_dictionary[img_id]['confidence_template']
         if matched_id_template == orb_match: #there was match with the expected page -> remove it from the problematic list
             n_matches+=1
             problematic_pages.remove(img_id)
             problematic_templates.remove(orb_match)
-            test_log[img_id]['template_2'] = matched_id_template
+            test_log[img_id]['matched_template_step_1'] = matched_id_template
         else:
             test_log[img_id]['failed_test_2'] = True 
     test_passed=False
@@ -767,16 +749,229 @@ def adjust_close_censor(censor_close_boxes,orb_shift_x, orb_shift_y, orb_scale, 
     
     return new_censor_close_boxes
 
+def rescale_censor_with_alignement(img,img_size,align_boxes,roi_boxes,pre_computed_align,pre_computed_rois,
+                                   transformation,image_time_logger,rescale_censor_with='template_align_and_extra'):
+
+    shift_x=transformation['shift_x']
+    shift_y=transformation['shift_y']
+    reference=transformation['reference']
+    scale_factor=transformation['scale_factor']
+    angle_degrees=transformation['angle_degrees']
+
+    if rescale_censor_with == 'orb_extra':
+        new_roi_boxes = apply_transformation_to_boxes(roi_boxes, image_time_logger, reference, scale_factor, 
+                                                            shift_x, shift_y, angle_degrees,name='roi',option=TRANSFORMATION_OPTION) #you can set no_rotation
+        #new_values = check_blank_and_extra(new_roi_boxes, pre_computed_rois, page, img_size) #uncomment if you want to use the roi for template matching and the blank for checking
+        # I check alignement on the extra roi with orb matching
+        is_match, n_matches_orb,extra_shift_x, extra_shift_y, extra_scale, extra_angle = orb_matching(img,new_roi_boxes[0],pre_computed_rois[0], shift_wr_tl = (0,0),
+                                                                                            top_n_matches=ORB_top_n_matches, match_threshold=ORB_match_threshold)
+    
+    elif rescale_censor_with == 'template_align_and_extra':
+        check_boxes = align_boxes + [roi_boxes[0]] 
+        check_pre_computed = pre_computed_align + [pre_computed_rois[0]]
+        check_boxes = apply_transformation_to_boxes(check_boxes, image_time_logger, reference, scale_factor, 
+                                                            shift_x, shift_y, angle_degrees,name='check',option=TRANSFORMATION_OPTION)
+        #axis align
+        check_boxes = convert_to_axis_aligned_box(check_boxes)
+        #print(check_boxes)
+        check_shifts, check_centers,_,check_confidences= compute_misalignment(img, check_boxes, img_size, check_pre_computed, scale_factor=SCALE_FACTOR_RESIZING,
+                    matching_threshold=MATCHING_THRESHOLD, pre_computed_rois=None,return_confidences=True,metric='matchTemplate')
+        extra_shift_x = [shift[0] for shift in check_shifts]
+        extra_shift_y = [shift[1] for shift in check_shifts]
+        extra_angle = 0.0
+        extra_scale = 1.0
+        is_match=True
+        if len(check_shifts) < N_ALIGN_REGIONS: #or N_ALIGN_REGIONS+1 ??
+            is_match=False
+        #i take the largest and smallest values for shift_x and shift_y
+    elif rescale_censor_with == 'skip_assume_aligned':
+        is_match = True
+        extra_shift_x = 0
+        extra_shift_y = 0
+        extra_scale = 1.0
+        extra_angle = 0.0
+    elif rescale_censor_with == 'skip_assume_misaligned':
+        is_match = True
+        extra_shift_x = 0
+        extra_shift_y = 0
+        extra_scale = 1.0
+        extra_angle = 0.0
+    return is_match, extra_shift_x, extra_shift_y, extra_scale, extra_angle
+
+def censor_the_page(is_match, transformation, extra_transformation, censor_boxes, censor_close_boxes, partial_coverage, 
+                    image_time_logger, save_debug_images, debug_path, 
+                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log, warning_string, debug_images_name):
+
+    shift_x=transformation['shift_x']
+    shift_y=transformation['shift_y']
+    reference=transformation['reference']
+    scale_factor=transformation['scale_factor']
+    angle_degrees=transformation['angle_degrees']
+
+    extra_shift_x=extra_transformation['extra_shift_x']
+    extra_shift_y=extra_transformation['extra_shift_y']
+    extra_scale=extra_transformation['extra_scale']
+    extra_angle=extra_transformation['extra_angle']
+
+    if is_match:
+        #i associate each close box with the container box and create an ordered list of the containers that match the censoring boxes
+        #map_to_container = map_to_smallest_containing(censor_boxes,censor_close_boxes)
+
+        censor_boxes,censor_close_boxes, partial_coverage = map_to_all_containing(censor_boxes,censor_close_boxes,
+                                                                                    partial_coverage, percentage_threshold=0.5) #to deal with multiple censor boxes for one censor-close and vicevers
+        #i create an extanded list with all the censor and censor-close boxes in superposition of more than 0.
+        #i rescale the dimensions of the censor-close boxes
+        new_censor_close_boxes = apply_transformation_to_boxes(censor_close_boxes, image_time_logger, reference, scale_factor, 
+                                                            shift_x, shift_y, angle_degrees,name='censor_close', option=TRANSFORMATION_OPTION)
+        
+        # i can convert back to axis aligned rectangles -> covers more space
+        if FORCE_AXIS_ALIGNED_BOXES:
+            new_censor_close_boxes = convert_to_axis_aligned_box(new_censor_close_boxes)
+        
+        # I enlarge close-censor regions based on alignement results 
+        # #if i am in one of two skip modes the transformation is actually an identity
+        censor_close_boxes_orb = adjust_close_censor(new_censor_close_boxes,extra_shift_x, extra_shift_y, 
+                                                        extra_scale, extra_angle, is_aligned=FORCE_AXIS_ALIGNED_BOXES)
+        if save_debug_images:
+            output_path = os.path.join(debug_path, unique_id, f"{QUESTIONNAIRE}", debug_images_name+'RE_adjusted_boxes',f"page_{matched_id}.png")
+            create_folder(os.path.dirname(output_path), parents=True, exist_ok=True)
+            save_these_boxes(output_path,img,[new_censor_close_boxes,censor_close_boxes_orb,censor_boxes],list_of_colors=['red','green','black'])
+        
+
+        # apply censoring considering the boundary boxes and the close censor boxes
+        save_censored_images_path=os.path.join(censored_images_path, f"{unique_id}", 
+                                                f"{QUESTIONNAIRE}",f"censored_page_w{warning_string}_{matched_id}.png")#, f"censored_page_{n_page}.png")
+        create_folder(os.path.dirname(save_censored_images_path), parents=True, exist_ok=True)
+        censored_img = censor_image_with_boundary(img, censor_close_boxes_orb, censor_boxes, 
+                                                partial_coverage=partial_coverage,logger=image_time_logger,
+                                                thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
+        image_time_logger and image_time_logger.call_start(f'writing_to_memory')
+        cv2.imwrite(save_censored_images_path, censored_img)
+        image_time_logger and image_time_logger.call_end(f'writing_to_memory')
+    else:
+        test_log['censored_with_large_boxes']=True
+        # i censor considering the large regions
+        save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
+                            warning=warning_string,partial_coverage=partial_coverage,
+                            thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger) 
+    return test_log
+
 #### Debug ####
-def save_list_of_images(list_of_images, debug_images_original, unique_id, verbose):
+def save_list_of_images(list_of_images, debug_images_original,folder_name, unique_id, verbose):
     if not verbose:
         return 0
     else:
         for i in range(len(list_of_images)):
             #save the images in the debug folder to check they are correctly extracted and ordered
-            debug_img_path = os.path.join(debug_images_original ,f"{unique_id}",str(QUESTIONNAIRE),f"page_{i+1}.png")
+            debug_img_path = os.path.join(debug_images_original ,f"{unique_id}",str(QUESTIONNAIRE),folder_name,f"page_{i+1}.png")
             create_folder(os.path.dirname(debug_img_path), parents=True, exist_ok=True)
             cv2.imwrite(debug_img_path, list_of_images[i])
+
+def initialize_warning_log(pages_in_annotation):
+    # I want to find the best match for the 
+        # load dictionary to store warning messages on pages
+        test_log = {
+            # template choice
+            'Choosen template': QUESTIONNAIRE,
+            'Confidence on template choice': None,
+            'report_template_choice': None,
+            # first stage check
+            'problematic_pages_step_1':None,
+            'test_passed_step_1':None,
+            # second stage check
+            'problematic_pages_step_2':None,
+            'test_passed_step_2':None,
+            'report_sorting_step_2': None,
+            # ocr stage results
+            'report_ocr': None, 
+            }
+        for p in pages_in_annotation:
+            test_log[p]={
+                #first stage check
+                'failed_test_1': False, 'matched_template_step_1': None, 'confidences_template_1': None,
+                #second stage check
+                'failed_test_2': False, 'matched_template_step_2': None, 'confidences_template_2': None,
+                #ocr stage check
+                'warning_ocr': False, 'matched_ocr': None, 'confidences_ocr': None,
+                # final match
+                'matched_template_final': None,
+                #is the page ignored because it was not matched?
+                'not_matched_ignored': False,
+                #is the page saved as is because not to censor?
+                'not_to_censor_ignored': False,
+                # alignement calculation
+                'selected_alignement_method': None, #should be the global one or homography if warning_ocr is True
+                'alignement_transformation': None,
+                'is_failure': False, 
+                # is the page censored with the large censor boxes in the end?
+                'censored_with_large_boxes': False,
+                # adjust transformation part
+                'adjust_transformation': None
+            }
+        return test_log
+
+def save_warning_log(test_log, save_path, unique_id, questionnaire):
+    log_path = os.path.join(save_path, f"{unique_id}", f"{questionnaire}")
+    create_folder(log_path, parents=True, exist_ok=True)
+    log_file_path = os.path.join(log_path, "warning_log.txt")
+    with open(log_file_path, 'w', encoding='utf-8') as f:
+        for key, value in test_log.items():
+            if isinstance(key, int):
+                f.write(f"Page {key}:\n")
+                for sub_key, sub_value in value.items():
+                    f.write(f"  {sub_key}: {sub_value}\n")
+            else:
+                f.write(f"{key}: {value}\n")
+
+def update_warning_cols(df,unique_id,test_log,pages_to_consider,id_col,ordering_warning_col,censoring_warning_col):
+    ordering_warning=''
+    censoring_warning=''
+    if test_log['test_passed_step_1']:
+        ordering_warning ='First stage'
+    elif test_log['test_passed_step_2']:
+        ordering_warning ='Second stage'
+    else:
+        n_warnings = 0
+        for img_id in pages_to_consider:
+            if test_log[img_id]['warning_ocr']:
+                n_warnings+=1
+        ordering_warning = f'OCR stage, pages with warning:   {n_warnings}/{len(pages_to_consider)}'
+    n_warnings=0
+    for img_id in pages_to_consider:
+        if test_log[img_id]['censored_with_large_boxes']:
+            n_warnings+=1
+    if n_warnings>0:
+        censoring_warning = f'pages censored with large boxes:   {n_warnings}/{len(pages_to_consider)}'
+    else:
+        censoring_warning = 'No warning'
+    df.loc[df[id_col] == unique_id, ordering_warning_col] = ordering_warning
+    df.loc[df[id_col] == unique_id, censoring_warning_col] = censoring_warning
+    return df
+def get_process_memory():
+    process = psutil.Process(os.getpid())
+    mem_info = process.memory_info()
+    return mem_info.rss / (1024 ** 2)  # Convert bytes to MB
+
+def get_deep_size(obj, seen=None):
+    """Recursively finds the actual size of a python object"""
+    size = sys.getsizeof(obj)
+    if seen is None:
+        seen = set()
+    
+    obj_id = id(obj)
+    if obj_id in seen:
+        return 0
+    seen.add(obj_id)
+
+    if isinstance(obj, dict):
+        size += sum([get_deep_size(v, seen) for v in obj.values()])
+        size += sum([get_deep_size(k, seen) for k in obj.keys()])
+    elif hasattr(obj, '__dict__'):
+        size += get_deep_size(obj.__dict__, seen)
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum([get_deep_size(i, seen) for i in obj])
+        
+    return size
 
 def parse_args():
     """Handle command-line arguments."""
