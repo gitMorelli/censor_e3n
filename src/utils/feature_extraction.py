@@ -286,6 +286,17 @@ def resize_patch(patch: ModeImage, scale: float, mode: str = "cv2", verbose: boo
             print(f"resize_patch: mode=cv2 original_size=({orig_w,orig_h}) scale={scale} time={( _t1 - _t0 ):0.6f}s")
         return resized, scale, scale
 
+def resize_patch_asymmetric(patch: ModeImage, scale_x: float, scale_y):
+    if not isinstance(patch, np.ndarray):
+        raise TypeError("patch must be a numpy.ndarray for mode='cv2'")
+    orig_h, orig_w = patch.shape[:2]
+    target_w = int(round(orig_w * scale_x))
+    target_h = int(round(orig_h * scale_y))
+    # Choose Lanczos-like interpolation if available
+    interp = cv2.INTER_LANCZOS4 if hasattr(cv2, "INTER_LANCZOS4") else cv2.INTER_AREA
+    resized = cv2.resize(patch, (target_w, target_h), interpolation=interp)
+    return resized
+
 # binarize the patch
 def binarize_patch(patch: ModeImage, threshold: int = 128, mode: str = "cv2", verbose: bool = False) -> ModeImage:
     """Binarize a patch using threshold. For PIL returns mode='1' image, for cv2 returns uint8 array 0/255."""

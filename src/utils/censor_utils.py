@@ -87,10 +87,6 @@ def get_transformation_to_match_to_template(page, root, pre_computed, img, img_s
 
 def get_transformation_from_dictionaries(page, template, image_time_logger, scale_factor=2, method = 'pre_computed',**kwargs):
 
-    if page['shifts'] is None:#if the method is pre_computed but matching with template regions
-        #was not possible in the first phase i need to backup to a weaker methods
-        method = 'orb_page_level_homography' #as an alternative i can add a method that tries to recalculate the tempalte matches
-
     if method == 'pre_computed': 
         image_time_logger.call_start('compute_misalignement')
         shifts , centers = page['shifts'], page['centers']
@@ -140,7 +136,7 @@ def get_transformation_from_dictionaries(page, template, image_time_logger, scal
 
         if not is_matched:
             #if the matching fails i can backup to a simpler method that does not use the template matches
-            return -1, None, None, None, None, None
+            return -1, None, None, None, None
 
     return scale_factor, shift_x, shift_y, angle_degrees,reference
 

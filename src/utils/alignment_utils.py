@@ -1,6 +1,6 @@
 from src.utils.feature_extraction import preprocess_roi, preprocess_blank_roi,preprocess_alignment_roi, extract_features_from_roi
 from src.utils.feature_extraction import profile_ncc, projection_profiles, edge_iou, ncc, dct_phash,count_black_pixels,count_connected_components
-from src.utils.feature_extraction import phash_hamming_distance, binary_crc32, convert_to_grayscale
+from src.utils.feature_extraction import phash_hamming_distance, binary_crc32, convert_to_grayscale, resize_patch_asymmetric
 from src.utils.file_utils import deserialize_keypoints
 import cv2  
 import numpy as np
@@ -10,6 +10,23 @@ import matplotlib.pyplot as plt
 from src.utils.logging import FileWriter
 import datetime
 import uuid
+
+def rescale_box_coords_given_resolutions(coords, original_resolution, target_resolution):
+    '''Rescales box coordinates of a list of boxes from original_resolution to target_resolution. 
+    Both resolutions should be in the format (width, height).'''
+    x_scale = target_resolution[0] / original_resolution[0]
+    y_scale = target_resolution[1] / original_resolution[1]
+    
+    rescaled_coords = []
+    for coord in coords:
+        x_min, y_min, x_max, y_max = coord
+        new_x_min = int(x_min * x_scale)
+        new_y_min = int(y_min * y_scale)
+        new_x_max = int(x_max * x_scale)
+        new_y_max = int(y_max * y_scale)
+        rescaled_coords.append([new_x_min, new_y_min, new_x_max, new_y_max])
+    
+    return rescaled_coords
 
 def convert_to_axis_aligned_box(coords):
     '''takes a four points polygon and returns the axis aligned bounding box that contains the polygon'''
@@ -66,7 +83,7 @@ def get_angle(p1, p2, p3):
     angle = np.arccos(np.clip(cosine_angle, -1.0, 1.0))
     return np.degrees(angle)
 
-def is_geometry_valid(test_w, test_h, transformation,angle_tolerance=10):
+def is_geometry_valid(test_w, test_h, transformation,angle_tolerance=10, resize_factor_area=1.0):
 
     reference=transformation['reference']
     scale_factor = transformation['scale_factor']
@@ -90,8 +107,8 @@ def is_geometry_valid(test_w, test_h, transformation,angle_tolerance=10):
         return False, "Non-convex (bow-tie distortion)"
 
     # 2. Area Consistency Check
-    scanned_area = cv2.contourArea(pts)
-    template_area = test_w * test_h
+    scanned_area = cv2.contourArea(pts.astype('float32'))
+    template_area = test_w * test_h * resize_factor_area 
     if scanned_area < (template_area * 0.4) or scanned_area > (template_area * 1.6):
         return False, f"Area error: {scanned_area/template_area:.2f}x size"
 
@@ -215,7 +232,8 @@ def template_matching(f_roi, t_roi, coord, mode="cv2",threshold=0.7,shift_wr_tl=
 
 
 def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, scale_factor=2,
-                         matching_threshold=0.7, pre_computed_rois=None,return_confidences=False, metric="matchTemplate",**kwargs):
+                         matching_threshold=0.7, pre_computed_rois=None,return_confidences=False, metric="matchTemplate",
+                         rescale_x_y=None,**kwargs):
     if pre_computed_rois:
         pre_computed=True
     else:
@@ -245,11 +263,13 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
             orb_method_to_find_matches = orb_parameters.get('orb_method_to_find_matches','brute_force')
             orb_match_filtering_method = orb_parameters.get('orb_match_filtering_method',"best_n")
             lowe_threshold=orb_parameters.get("orb_lowe_threshold",0.7)
+            orb_decision_procedure = orb_parameters.get("orb_decision_procedure",'simple')
             is_matched, n_good_matches, shift_x, shift_y, _, _ = orb_matching(filled_png, new_coord, pre_computed_template[i], shift_wr_tl,top_n_matches=orb_top_n_matches, 
                                                                               orb_nfeatures=orb_nfeatures, match_threshold=orb_match_threshold, 
                                                                               method_to_find_matches=orb_method_to_find_matches, 
                                                                               match_filtering_method=orb_match_filtering_method, 
-                                                                              lowe_threshold=lowe_threshold)
+                                                                              lowe_threshold=lowe_threshold, rescale_x_y=rescale_x_y, 
+                                                                              decision_procedure=orb_decision_procedure)
             max_val = n_good_matches
         elif metric == "matchTemplate":
             t_roi = pre_computed_template[i]['full']
@@ -257,12 +277,56 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
                 f_roi = preprocess_alignment_roi(filled_png, new_coord, mode=mode, verbose=False)
             else:
                 f_roi = pre_computed_rois[i]
+            
+            if rescale_x_y is not None:
+                f_roi = resize_patch_asymmetric(f_roi, rescale_x_y[0], rescale_x_y[1])
             #print(f_roi.shape, t_roi.shape)
             #print("-"*50)
             is_matched,max_val,shift_x, shift_y = template_matching(f_roi, t_roi, coord, mode=mode,
                                                                     shift_wr_tl=shift_wr_tl,threshold=matching_threshold)
+            #show f_roi and t_roi for debugging
+            '''
+            # 2. Determine the maximum dimensions needed to fit either image
+            # This handles cases where the "resized" image might actually be larger (scale > 1)
+            max_h = max(t_roi.shape[0], f_roi.shape[0])
+            max_w = max(t_roi.shape[1], f_roi.shape[1])
+
+            # 3. Create two identical canvases of the same max size
+            # Use the same dtype as your patches (usually uint8 for images)
+            canvas_resized = np.zeros((max_h, max_w), dtype=t_roi.dtype)
+            canvas_original = np.zeros((max_h, max_w), dtype=t_roi.dtype)
+
+            # 4. Place the images onto the canvases
+            # Using [0:h, 0:w] ensures they start at the same top-left origin (0,0)
+            h_res, w_res = f_roi.shape[:2]
+            canvas_resized[:h_res, :w_res] = f_roi
+
+            h_orig, w_orig = t_roi.shape[:2]
+            canvas_original[:h_orig, :w_orig] = t_roi
+
+            # 5. Plotting on the same scale
+            plt.figure(figsize=(12, 6))
+
+            plt.subplot(1, 2, 1)
+            plt.imshow(canvas_resized, cmap='gray')
+            plt.title(f"Resized Patch: {w_res}x{h_res}\n(Scale X={rescale_x_y[0]:.2f}, Y={rescale_x_y[1]:.2f})")
+            plt.axis('on') 
+
+            plt.subplot(1, 2, 2)
+            plt.imshow(canvas_original, cmap='gray')
+            plt.title(f"Original T_ROI: {w_orig}x{h_orig}, {is_matched}")
+            plt.axis('on')
+
+            plt.tight_layout()
+            plt.show()'''
+            
+        #if during matching the patch was rescaled i have to adjust the computed shift accordingly
+        #consider that i am computing the shift in the scale of the template and i want the shifts in the scale of the image
         confidences.append(max_val)
         if is_matched: #only include regions for which you have a match
+            if rescale_x_y is not None:
+                shift_x = shift_x / rescale_x_y[0]
+                shift_y = shift_y / rescale_x_y[1]
             shifts.append((shift_x, shift_y))
             centers.append((center_x, center_y))
         if metric == "matchTemplate":
@@ -277,8 +341,8 @@ def compute_misalignment(filled_png, rois, img_shape, pre_computed_template, sca
 def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,template_kpts=None, 
                  compute_method="center_of_mass",
                  shift_wr_tl=(0,0), 
-                 top_n_matches=50, orb_nfeatures=2000, match_threshold=10,
-                 method_to_find_matches='brute_force',match_filtering_method="best_n",lowe_threshold=0.7):
+                 top_n_matches=50, orb_nfeatures=2000, match_threshold=10, decision_procedure='simple',
+                 method_to_find_matches='brute_force',match_filtering_method="best_n",lowe_threshold=0.7, rescale_x_y=None):
     #by default i consider that i am comparing patches that are at teh same absolute position in the image (shift_wr_tl=(0,0)) 
     
     if image_kpts is not None and template_kpts is not None:
@@ -287,6 +351,8 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
     else:
         # preprocess image
         preprocessed_patch = preprocess_roi(img, box, target_size=None)
+        if rescale_x_y is not None:
+            preprocessed_patch = resize_patch_asymmetric(preprocessed_patch, rescale_x_y[0], rescale_x_y[1])
         # Display the preprocessed patch for debugging or visualization
         '''plt.imshow(preprocessed_patch, cmap='gray')
         plt.title("Preprocessed Patch")
@@ -315,22 +381,29 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
         kps_template, des_template = deserialize_keypoints(template_properties['orb_kp']), template_properties['orb_des']
 
     #warnings
+    error=''
     if des_image is None :
-        raise ValueError("des_image is empty")
+        error += "des_image is empty, "
     if des_template is None:
-        raise ValueError("des_template is empty")
-
-    # 2. Check if they have the same shape and type
-    if des_image.dtype != des_template.dtype:
-        raise ValueError(f"Error: Descriptor type mismatch! {des_image.dtype} vs {des_template.dtype}")
-        
-    if des_image.shape[1] != des_template.shape[1]:
-        raise ValueError(f"Error: Descriptor dimension mismatch! {des_image.shape[1]} vs {des_template.shape[1]}")
+        error += 'des_template is empty, '
+    if error=='' and des_image.dtype != des_template.dtype:
+        error += "Error: Descriptor type mismatch! {des_image.dtype} vs {des_template.dtype}, "
+    if error=='' and des_image.shape[1] != des_template.shape[1]:
+        error += "Error: Descriptor dimension mismatch! {des_image.shape[1]} vs {des_template.shape[1]}, "
+    
+    if error != '':
+        return False, error, None, None, None, None 
+        #if there is an error in the descriptors we consider that there is no match and we return None for the transformation parameters
     
     if method_to_find_matches == 'brute_force':
         # 2. Match features
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        matches = sorted(bf.match(des_image, des_template), key=lambda x: x.distance)
+        if match_filtering_method == "lowe_ratio":
+            # For Lowe's ratio test, we need to use knnMatch to get the 2 best matches for each point
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False) # crossCheck must be False for k>1
+            matches = bf.knnMatch(des_image, des_template, k=2)
+        else:
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matches = sorted(bf.match(des_image, des_template), key=lambda x: x.distance)
     elif method_to_find_matches == 'knn':
         # 2. FLANN Matcher (faster than Brute Force for large point sets)
         #FLANN_INDEX_KDTREE = 1
@@ -351,6 +424,7 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
     if match_filtering_method == "best_n":
         # Use only the top 50 matches for stability
         good_matches = matches[:min(top_n_matches, len(matches))]
+        n_good_matches = len(matches)
     elif match_filtering_method == "lowe_ratio":
         # 3. Apply Lowe's Ratio Test
         # This discards matches where the best and second-best are too similar
@@ -361,9 +435,35 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
                     m, n = match_pair
                     if m.distance < lowe_threshold * n.distance:
                         good_matches.append(m)
+        n_good_matches = len(good_matches)
+    elif match_filtering_method == "distance_threshold":
+        # Filter matches based on a distance threshold
+        good_matches = [m for m in matches if m.distance < lowe_threshold]
+        n_good_matches = len(good_matches)
+    elif match_filtering_method == "all":
+        good_matches = matches[:]
+        n_good_matches = len(matches)
 
-    n_good_matches = len(good_matches)
-    is_matched = n_good_matches > match_threshold
+    if decision_procedure == "simple":
+        is_matched = n_good_matches > match_threshold
+    elif decision_procedure == "homography":
+        is_matched, inliers_count, inlier_ratio = are_images_same_ORB(kps_image, kps_template, good_matches, 
+                                         min_inliers=match_threshold, inlier_ratio_threshold=0.3)
+        return is_matched, [n_good_matches,inliers_count,inlier_ratio],0,0,1,0
+    elif decision_procedure == "geometric":
+        if len(good_matches) < 4:
+            #i stop immediately because i cannot compute the homography ffectively
+            return False, [n_good_matches,'matches<4'], 0,0,1,0
+        # Extract coordinates of matched points
+        image_pts = np.float32([kps_image[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+        template_pts = np.float32([kps_template[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2) 
+        M, mask = cv2.findHomography(template_pts, image_pts, cv2.USAC_MAGSAC, 5.0)
+        if M is None:
+            is_matched = False
+        transformation = {'reference': (0,0), 'scale_factor': M, 'shift_x': 'homography', 'shift_y': 'homography', 'angle_degrees': 'homography'}
+        flag,error = is_geometry_valid(test_w=100,test_h=100, transformation=transformation, angle_tolerance=10,
+                                           resize_factor_area=1)
+        return flag, [n_good_matches,error],0,0,1,0
 
     if is_matched:
         # Extract coordinates of matched points
@@ -419,6 +519,32 @@ def orb_matching(img=None,box=None,template_properties=None, image_kpts=None,tem
         return is_matched, n_good_matches,shift_x, shift_y, scale, angle
     else:
         return is_matched,n_good_matches, None, None, None, None  # Not enough matches to compute transformation
+
+def are_images_same_ORB(kp1, kp2, good_matches, min_inliers=15, inlier_ratio_threshold=0.3):
+
+    if len(good_matches) < min_inliers:
+        #i stop immediately because i cannot compute the homography ffectively
+        return False, 'matches<min', None
+
+    # 4. Find Homography (The "Truth" Test)
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+
+    # RANSAC returns a mask where 1 = inlier, 0 = outlier
+    M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    
+    if mask is None:
+        return False,'mask_empty',None
+
+    inliers_count = np.sum(mask)
+    inlier_ratio = inliers_count / len(good_matches)
+
+    # 5. Final Decision
+    # We want a decent absolute number of points AND a high percentage of "valid" matches
+    is_same = inliers_count >= min_inliers
+    #is_same = inliers_count >= min_inliers and inlier_ratio >= inlier_ratio_threshold
+    
+    return is_same, inliers_count, inlier_ratio
 
 def compute_distance(c1,c2):
     return np.sqrt((c2[0] - c1[0]) ** 2 + (c2[1] - c1[1]) ** 2)

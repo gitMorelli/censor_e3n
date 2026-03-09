@@ -20,9 +20,9 @@ from src.utils.json_parsing import get_align_boxes, get_ocr_boxes
 
 
 from src.utils.feature_extraction import crop_patch, preprocess_alignment_roi, preprocess_roi, preprocess_blank_roi,load_image
-from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image
+from src.utils.feature_extraction import extract_features_from_blank_roi, extract_features_from_roi,censor_image, resize_patch_asymmetric
 from src.utils.feature_extraction import extract_features_from_page, preprocess_page, extract_features_from_text_region, preprocess_text_region
-from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords
+from src.utils.alignment_utils import page_vote,compute_transformation, compute_misalignment,apply_transformation,enlarge_crop_coords, rescale_box_coords_given_resolutions
 from src.utils.alignment_utils import plot_rois_on_image_polygons,plot_rois_on_image,plot_both_rois_on_image,template_matching
 from src.utils.logging import FileWriter, initialize_logger
 
@@ -508,14 +508,21 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
         img_id,t_id = pair 
         align_boxes = template_dictionary[t_id]['align_boxes']
         pre_computed_align = template_dictionary[t_id]['pre_computed_align']
+        #i rescale align boxes based on the resolution of the page and template before checking
+        align_boxes = rescale_box_coords_given_resolutions(align_boxes, template_dictionary[t_id]['template_size'], page_dictionary[img_id]['img_size'])
+        #this is the rescale facto to resize the align region in the image to the size of the align region in the template
+        rescale_x = template_dictionary[t_id]['template_size'][0]/page_dictionary[img_id]['img_size'][0]
+        rescale_y = template_dictionary[t_id]['template_size'][1]/page_dictionary[img_id]['img_size'][1]
         if compute_report:
             shifts, centers, processed_rois, report = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
                                 pre_computed_template=pre_computed_align,scale_factor=scale_factor, 
-                                matching_threshold=matching_threshold, return_confidences=True,metric=metric, **kwargs)  
+                                matching_threshold=matching_threshold, return_confidences=True,metric=metric,
+                                rescale_x_y=(rescale_x,rescale_y), **kwargs)  
         else:
             shifts, centers, processed_rois = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
                                     pre_computed_template=pre_computed_align,scale_factor=scale_factor, 
-                                    matching_threshold=matching_threshold,metric=metric, **kwargs) #recall this functions returns a shift for each good match
+                                    matching_threshold=matching_threshold,metric=metric,
+                                    rescale_x_y=(rescale_x,rescale_y), **kwargs) #recall this functions returns a shift for each good match
             #thus you expect len=2 for the shift variable, instead processed_rois returns all regions
             report = None
         
@@ -564,7 +571,10 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
 
         for ii,img_id in enumerate(pages_step_3):
             if page_dictionary[img_id]['text']==None:
-                patch = preprocess_text_region(page_dictionary[img_id]['img'], template_dictionary[t_id]['text_box'], mode=mode, verbose=False)
+                text_box = [template_dictionary[t_id]['text_box']]
+                #i rescale the boxes based on image and template resolution
+                rescaled_text_box = rescale_box_coords_given_resolutions(text_box, template_dictionary[t_id]['template_size'], page_dictionary[img_id]['img_size'])
+                patch = preprocess_text_region(page_dictionary[img_id]['img'], rescaled_text_box[0], mode=mode, verbose=False)
                 page_text = extract_features_from_text_region(patch, mode=mode, verbose=False, psm=template_dictionary[t_id]['psm'])['text']
             else:
                 page_text = page_dictionary[img_id]['text']

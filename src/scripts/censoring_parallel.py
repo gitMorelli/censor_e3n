@@ -47,7 +47,7 @@ TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_te
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
 # other variables
-QUESTIONNAIRE = "13"
+QUESTIONNAIRE = "10"
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
 #SAVE_ANNOTATED_TEMPLATES=True
