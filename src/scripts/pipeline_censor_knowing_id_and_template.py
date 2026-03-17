@@ -47,7 +47,8 @@ TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_te
 SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
 
 # other variables
-QUESTIONNAIRE = "13"
+QUESTIONNAIRE = "5"
+N_subjects = 3 #how many subject to consider before stopping 
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
 #SAVE_ANNOTATED_TEMPLATES=True
@@ -111,6 +112,8 @@ CHECKING_SECOND_STAGE = 'orb' #options are 'template' or 'orb'
 #censoring (sriped regions)
 THICKNESS_PCT = 0.1
 SPACING_MULT = 0.1
+PAGE_FRAC = 0.04 #2 characters are in a range of 0.02-0.06 page width
+AREA_FRAC = 2/3 #covered fraction in partially censored boxes
 
 def main():
     args = parse_args()
@@ -210,7 +213,7 @@ def main():
         print("\n\n"+"="*50)
         print("Processing ID:", unique_id)
         count+=1
-        if count == 4:
+        if count == N_subjects:
             break
 
         #### LOAD filenames for selected ID #####
@@ -410,7 +413,8 @@ def main():
                 #in this case i censor with the extended regions because i cannot be sure of the alignement in any way
                 save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
                                     warning='',partial_coverage=partial_coverage,
-                                    thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger)   
+                                    thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger,
+                                    page_w=img_size[0],page_frac=PAGE_FRAC,area_frac=AREA_FRAC)   
                 continue
             #DEBUG
             #force parameters of alingement to debug
@@ -442,7 +446,8 @@ def main():
             ###### CENSOR IMAGES ######   
             test_log = censor_the_page(is_match, transformation, extra_transformation, censor_boxes, censor_close_boxes, partial_coverage, 
                     image_time_logger, save_debug_images, debug_path, 
-                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log=test_log, warning_string='', debug_images_name=debug_images_name) # i don't add warning strings to pages
+                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log=test_log, warning_string='', debug_images_name=debug_images_name,
+                    page_w=img_size[0],page_frac=PAGE_FRAC,area_frac=AREA_FRAC) # i don't add warning strings to pages
         
         #save global and page level warning
         save_warning_log(test_log, censored_images_path, unique_id, QUESTIONNAIRE)
@@ -848,7 +853,7 @@ def rescale_censor_with_alignement(img,img_size,align_boxes,roi_boxes,pre_comput
 
 def censor_the_page(is_match, transformation, extra_transformation, censor_boxes, censor_close_boxes, partial_coverage, 
                     image_time_logger, save_debug_images, debug_path, 
-                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log, warning_string, debug_images_name):
+                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log, warning_string, debug_images_name,**kwargs):
 
     shift_x=transformation['shift_x']
     shift_y=transformation['shift_y']
@@ -893,7 +898,7 @@ def censor_the_page(is_match, transformation, extra_transformation, censor_boxes
         create_folder(os.path.dirname(save_censored_images_path), parents=True, exist_ok=True)
         censored_img = censor_image_with_boundary(img, censor_close_boxes_orb, censor_boxes, 
                                                 partial_coverage=partial_coverage,logger=image_time_logger,
-                                                thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT)
+                                                thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,**kwargs)
         image_time_logger and image_time_logger.call_start(f'writing_to_memory')
         cv2.imwrite(save_censored_images_path, censored_img)
         image_time_logger and image_time_logger.call_end(f'writing_to_memory')
@@ -902,7 +907,7 @@ def censor_the_page(is_match, transformation, extra_transformation, censor_boxes
         # i censor considering the large regions
         save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
                             warning=warning_string,partial_coverage=partial_coverage,
-                            thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger) 
+                            thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger,**kwargs) 
     return test_log
 
 #### Debug ####
