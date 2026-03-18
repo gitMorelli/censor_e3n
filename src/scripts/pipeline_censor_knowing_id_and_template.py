@@ -12,6 +12,7 @@ import numpy as np
 import cv2
 from pympler import asizeof
 import psutil
+import csv
 
 from src.utils.convert_utils import process_pdf_files
 #from src.utils.convert_utils import pdf_to_png_images
@@ -44,11 +45,12 @@ logger = logging.getLogger(__name__)
 PDF_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers"#additional"#100263_template"
 CSV_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\ref_pdf_Qx"#additional"#100263_template"
 TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_template"#additional"#100263_template"
-SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline"#additional"#100263_template" 
+SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\censored_for_yolo" #censored_for_yolo" #test_censoring_pipeline #additional"#100263_template" 
+
 
 # other variables
-QUESTIONNAIRE = "5"
-N_subjects = 3 #how many subject to consider before stopping 
+QUESTIONNAIRE = "10"
+N_subjects = 20 #how many subject to consider before stopping 
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
 #SAVE_ANNOTATED_TEMPLATES=True
@@ -70,6 +72,7 @@ MAX_DIST_PHASH = 18
 #ocr
 GAP_THRESHOLD_OCR = 0.1
 MAX_DIST_OCR = 0.2
+DISCARD_DIST_OCR = 0.7
 TEXT_SIMILARITY_METRIC = 'similarity_jaccard_tokens'
 #orb
 GAP_THRESHOLD_ORB = 5 # i shoudl modify this and the other value (i fixed to the same value as phash but makes no sense)
@@ -107,6 +110,7 @@ TRANSFORMATION_OPTION = 'standard'#'no_rotation' #options are 'no_rotation', 'st
 FORCE_AXIS_ALIGNED_BOXES = True #if false the censor boxes are rotated after alygnemetn -> they are polygon; If true the smallest 
 #rectangle that is axi aligned and contains the polygon is drawn instead
 # page ordering
+ORDERING_METHOD_STEP_2 = 'orb' #orb or phash
 CHECKING_FIRST_STAGE = 'template' #options are 'template' or 'orb'
 CHECKING_SECOND_STAGE = 'orb' #options are 'template' or 'orb'
 #censoring (sriped regions)
@@ -114,6 +118,7 @@ THICKNESS_PCT = 0.1
 SPACING_MULT = 0.1
 PAGE_FRAC = 0.04 #2 characters are in a range of 0.02-0.06 page width
 AREA_FRAC = 2/3 #covered fraction in partially censored boxes
+USE_PARTIAL = False
 
 def main():
     args = parse_args()
@@ -200,8 +205,9 @@ def main():
     file_logger.write(pages_in_annotation)
 
     #select only the ids in a given list
-    #selected_ids = ['A0A0F4U8']
-    #filtered_df = df[df[ID_COL].isin(selected_ids)]
+    '''selected_ids = ['A2V7A3H3','A0F0P4I2']
+    df = df[df[ID_COL].isin(selected_ids)]
+    N_subjects = len(df[ID_COL].unique())+1'''
 
     # Group by the 'id' column and iterate over each group
     count=0
@@ -225,12 +231,13 @@ def main():
         file_logger.write(filenames)
         #file_logger.write(pdf_paths)
 
-        test_log = initialize_warning_log(pages_in_annotation)
-
         #i extract the images and order them based on the expeected ordering
         #in some cases pdf_paths is a single multipage pdfs in others are multiple one page pdfs files
-        list_of_images, test_log = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False, test_log=test_log)
-
+        list_of_images, extraction_log = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False, test_log={})
+        #list_of_images = list_of_images[:-2]+list_of_images[:2]
+        pages_to_consider = [i+1 for i in range(len(list_of_images))]
+        test_log = initialize_warning_log(pages_to_consider)
+        test_log = test_log | extraction_log
         #DEBUG, remove after, disorder the pages 
         #new_order=[3,2,1,0]
         #list_of_images = [list_of_images[i] for i in new_order] 
@@ -255,7 +262,6 @@ def main():
         page_dictionary,template_dictionary = initialize_sorting_dictionaries(list_of_images, root, input_from_file=False)
         #i will consider all template pages from the beginning and all images of course
         templates_to_consider = pages_in_annotation[:]
-        pages_to_consider = [i+1 for i in range(len(list_of_images))]
         #pre_load_template_info
         template_dictionary = pre_load_selected_templates(templates_to_consider,npy_dict, 
                                                           root, template_dictionary)
@@ -288,12 +294,13 @@ def main():
             #sort with orb matching and check if the association is correct via template matching
             #pre_load orb keypoints for images
             page_dictionary = pre_load_image_properties(problematic_pages,page_dictionary,
-                                                        template_dictionary,properties=['orb'])
+                                                        template_dictionary,properties=[ORDERING_METHOD_STEP_2])
             test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates = perform_second_stage_check(problematic_pages, problematic_templates, 
                                                                                                                                          page_dictionary, template_dictionary, test_log,
                                                                                                                                          file_logger,
                                                                                                                                          method_checking=CHECKING_SECOND_STAGE, 
-                                                                                                                                         orb_parameters=ORB_parameters)
+                                                                                                                                         orb_parameters=ORB_parameters, 
+                                                                                                                                         method_ordering=ORDERING_METHOD_STEP_2)
             test_log['problematic_pages_step_2'] = problematic_pages[:]
             test_log['test_passed_step_2'] = test_passed
             #DEBUG
@@ -312,10 +319,12 @@ def main():
                     test_log[img_id]['confidences_ocr'] = page_dictionary[img_id]['confidence_template']
                     #i give a warning if the match computed with ocr is  below the threshold
                     test_log[img_id]['warning_ocr'] = -1*test_log[img_id]['confidences_ocr']+1>MAX_DIST_OCR #i convert back to the cost for comparing with the threshold
+
                     #i give a warnign if the cost is over the maximum cost defined by the threshold
                 test_log['report_ocr'] = copy.deepcopy(report)
                 debug_print_associations(pages_to_consider,page_dictionary,file_logger)
         
+        partial_boxes_coords_path = initialize_csv(censored_images_path,unique_id, QUESTIONNAIRE)
         ########## PAGE CENSORING ##########
         for img_id in pages_to_consider:
 
@@ -323,11 +332,16 @@ def main():
             page = page_dictionary[img_id]
             matched_id = page['matched_page']
             test_log[img_id]['matched_template_final'] = matched_id
-            template = template_dictionary[matched_id]
-            test_log[img_id]['template_image_resolutions_final'] = list([template['template_size'], page['img_size']])
             if matched_id == None:
                 test_log[img_id]['not_matched_ignored'] = True
                 continue
+            if test_log[img_id]['warning_ocr']: # i discard pages that were mathed with ocr but very very unreliably 
+                #(eg case in which i have less pages than templates and one or more pages are also wrong)
+                if -1*test_log[img_id]['confidences_ocr']+1>DISCARD_DIST_OCR:
+                    test_log[img_id]['ocr_too_low_ignored'] = True
+                    continue
+            template = template_dictionary[matched_id]
+            test_log[img_id]['template_image_resolutions_final'] = list([template['template_size'], page['img_size']])
             img_size = page['img_size']
             #template_size = template_dictionary[matched_id]['template_size']
             img=page['img'] #all pages are already loaded
@@ -354,6 +368,8 @@ def main():
             pre_computed_align = template['pre_computed_align'][:]
             # I preprocess the censor regions to extend their dimensions to page limits
             censor_boxes,partial_coverage = get_censor_boxes(root,matched_id) #we need to refer to the correct id of the template
+            if not USE_PARTIAL:
+                partial_coverage = [False for _ in range(len(censor_boxes))] #if i don't want to use partial coverage i set all the boxes as not partial, so they will be censored with the full box
             censor_close_boxes,_ = get_censor_close_boxes(root,matched_id)
 
 
@@ -415,6 +431,7 @@ def main():
                                     warning='',partial_coverage=partial_coverage,
                                     thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger,
                                     page_w=img_size[0],page_frac=PAGE_FRAC,area_frac=AREA_FRAC)   
+                save_partial_regions_to_csv(censor_boxes,partial_coverage, matched_id, partial_boxes_coords_path)
                 continue
             #DEBUG
             #force parameters of alingement to debug
@@ -447,7 +464,7 @@ def main():
             test_log = censor_the_page(is_match, transformation, extra_transformation, censor_boxes, censor_close_boxes, partial_coverage, 
                     image_time_logger, save_debug_images, debug_path, 
                     unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log=test_log, warning_string='', debug_images_name=debug_images_name,
-                    page_w=img_size[0],page_frac=PAGE_FRAC,area_frac=AREA_FRAC) # i don't add warning strings to pages
+                    page_w=img_size[0],page_frac=PAGE_FRAC,area_frac=AREA_FRAC, partial_boxes_coords_path = partial_boxes_coords_path) # i don't add warning strings to pages
         
         #save global and page level warning
         save_warning_log(test_log, censored_images_path, unique_id, QUESTIONNAIRE)
@@ -644,6 +661,9 @@ def perform_first_stage_check(pages_to_consider, templates_to_consider, page_dic
     test_passed=False
     if n_matches==min_length:
         test_passed=True
+    '''print(n_matches,min_length)
+    print(problematic_pages)
+    print(problematic_templates)'''
     
     return test_passed,page_dictionary, template_dictionary, test_log, problematic_pages, problematic_templates
 
@@ -672,9 +692,10 @@ def perform_second_stage_check(pages_to_consider, templates_to_consider, page_di
     #i test if the pages are already in place
     pairs_to_consider = []
     for img_id in pages_to_consider: 
-        orb_matched_id = page_dictionary[img_id][key_to_check]
-        #print(orb_matched_id)
-        pairs_to_consider.append([img_id,orb_matched_id])
+        if page_dictionary[img_id][key_to_check] is not None:
+            orb_matched_id = page_dictionary[img_id][key_to_check]
+            #print(orb_matched_id)
+            pairs_to_consider.append([img_id,orb_matched_id])
 
     #perform template_matching and update the matching keys in the dictionaries
     page_dictionary,template_dictionary = perform_template_matching(pairs_to_consider,page_dictionary,template_dictionary, 
@@ -853,7 +874,8 @@ def rescale_censor_with_alignement(img,img_size,align_boxes,roi_boxes,pre_comput
 
 def censor_the_page(is_match, transformation, extra_transformation, censor_boxes, censor_close_boxes, partial_coverage, 
                     image_time_logger, save_debug_images, debug_path, 
-                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log, warning_string, debug_images_name,**kwargs):
+                    unique_id, QUESTIONNAIRE, matched_id, img, censored_images_path, test_log, warning_string, debug_images_name,
+                    partial_boxes_coords_path, **kwargs):
 
     shift_x=transformation['shift_x']
     shift_y=transformation['shift_y']
@@ -902,13 +924,66 @@ def censor_the_page(is_match, transformation, extra_transformation, censor_boxes
         image_time_logger and image_time_logger.call_start(f'writing_to_memory')
         cv2.imwrite(save_censored_images_path, censored_img)
         image_time_logger and image_time_logger.call_end(f'writing_to_memory')
+        clipped_boxes=get_contained_censor_boxes(censor_close_boxes_orb, censor_boxes, partial_coverage)
+        save_partial_regions_to_csv(clipped_boxes,[True for _ in clipped_boxes], matched_id, partial_boxes_coords_path)
     else:
         test_log['censored_with_large_boxes']=True
         # i censor considering the large regions
         save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
                             warning=warning_string,partial_coverage=partial_coverage,
                             thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger,**kwargs) 
+        save_partial_regions_to_csv(censor_boxes,partial_coverage, matched_id, partial_boxes_coords_path)
     return test_log
+
+
+def initialize_csv(save_path,unique_id, questionnaire):
+    """Creates the file and writes the header."""
+    filepath = os.path.join(save_path, f"{unique_id}", f"{questionnaire}", "partial_boxes_coords.csv")
+    create_folder(os.path.dirname(filepath), parents=True, exist_ok=True)
+    with open(filepath, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['filename', 'xtl', 'ytl', 'xbr', 'ybr'])
+    return filepath
+def save_partial_regions_to_csv(censor_boxes,partial_list, page, save_path):
+    """Appends a list of boxes for a specific page."""
+    with open(save_path, 'a', newline='') as f:
+        writer = csv.writer(f)
+        for i,box in enumerate(censor_boxes):
+            if partial_list[i]:
+                # box is expected to be [xtl, ytl, xbr, ybr]
+                writer.writerow([page] + box)
+def get_contained_censor_boxes(censor_close_boxes, container_boxes, partial_list):
+    """
+    Clips censor_close_boxes to the boundaries of container_boxes.
+    
+    Args:
+        censor_close_boxes: List of [xtl, ytl, xbr, ybr]
+        container_boxes: List of [xtl, ytl, xbr, ybr]
+        
+    Returns:
+        List of clipped [xtl, ytl, xbr, ybr]
+    """
+    clipped_boxes = []
+
+    for i in range(len(censor_close_boxes)):
+        if partial_list[i]:
+            # Unpack coordinates
+            c_xtl, c_ytl, c_xbr, c_ybr = censor_close_boxes[i]
+            b_xtl, b_ytl, b_xbr, b_ybr = container_boxes[i]
+
+            # Clip Top-Left: Must be at least the container's TL, 
+            # but no further than the container's BR
+            xtl = max(b_xtl, c_xtl)
+            ytl = max(b_ytl, c_ytl)
+
+            # Clip Bottom-Right: Must be no further than the container's BR,
+            # but at least the (potentially clipped) xtl
+            xbr = min(c_xbr, b_xbr)
+            ybr = min(c_ybr, b_ybr)
+
+            clipped_boxes.append([xtl, ytl, xbr, ybr])
+
+    return clipped_boxes
 
 #### Debug ####
 def save_list_of_images(list_of_images, debug_images_original,folder_name, unique_id, verbose):
@@ -946,11 +1021,12 @@ def initialize_warning_log(pages_in_annotation):
                 #second stage check
                 'failed_test_2': False, 'matched_template_step_2': None, 'confidences_template_2': None, 'template_page_resolutions_step_2': None,
                 #ocr stage check
-                'warning_ocr': False, 'matched_ocr': None, 'confidences_ocr': None,
+                'warning_ocr': False, 'matched_ocr': None, 'confidences_ocr': None, 
                 # final match
                 'matched_template_final': None, 'template_image_resolutions_final': None ,
                 #is the page ignored because it was not matched?
                 'not_matched_ignored': False,
+                'ocr_too_low_ignored': False,
                 #is the page saved as is because not to censor?
                 'not_to_censor_ignored': False,
                 # alignement calculation

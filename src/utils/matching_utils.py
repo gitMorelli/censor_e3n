@@ -513,6 +513,8 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
         #this is the rescale facto to resize the align region in the image to the size of the align region in the template
         rescale_x = template_dictionary[t_id]['template_size'][0]/page_dictionary[img_id]['img_size'][0]
         rescale_y = template_dictionary[t_id]['template_size'][1]/page_dictionary[img_id]['img_size'][1]
+        #if metric == 'ocr':
+
         if compute_report:
             shifts, centers, processed_rois, report = compute_misalignment(page_dictionary[img_id]['img'], align_boxes, page_dictionary[img_id]['img_size'], 
                                 pre_computed_template=pre_computed_align,scale_factor=scale_factor, 
@@ -570,7 +572,7 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
     for jj,t_id in enumerate(problematic_templates_step_2):
 
         for ii,img_id in enumerate(pages_step_3):
-            if page_dictionary[img_id]['text']==None:
+            if page_dictionary[img_id]['text']==None: #but it is always none (and should be since i cannot use the same multiple times in this loop)
                 text_box = [template_dictionary[t_id]['text_box']]
                 #i rescale the boxes based on image and template resolution
                 rescaled_text_box = rescale_box_coords_given_resolutions(text_box, template_dictionary[t_id]['template_size'], page_dictionary[img_id]['img_size'])

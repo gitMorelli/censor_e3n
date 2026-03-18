@@ -796,9 +796,7 @@ def fill_polygon_striped_relative(
     angle = final_angle 
         
     # 3. Calculate Stripe Parameters
-    page_based_pattern = False
     if 'page_w' in kwargs and 'page_frac' in kwargs and 'area_frac' in kwargs :
-        page_based_pattern = True
         page_w=kwargs.get('page_w')
         page_frac=kwargs.get('page_frac')
         frac_area=kwargs.get('area_frac')
