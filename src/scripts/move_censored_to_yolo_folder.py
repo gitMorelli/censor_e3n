@@ -20,11 +20,11 @@ def copy_selected_files(source_folder, destination_folder, file_list, added_stri
     dest_path.mkdir(parents=True, exist_ok=True)
 
     for filename in file_list:
-        filename=f"{added_string}_{filename}"
         file_to_copy = os.path.join(src_path,filename)
+        filename=f"{added_string}_{filename}"
         
         # 2. Check if the file actually exists before trying to copy
-        if file_to_copy.exists():
+        if os.path.exists(file_to_copy):
             # copy2 preserves metadata like timestamps
             shutil.copy2(file_to_copy, dest_path / filename)
             #print(f"Successfully copied: {filename}")
@@ -42,7 +42,7 @@ def main():
     # Configurazione del file di log (quali id ho già trasferito per quali questionari)
     colonne = ["ID", "Q"] # Sostituisci con i nomi che preferisci
     file_path = os.path.join(main_source_path, "transferred_ids.csv")
-    if file_path.exists():
+    if os.path.exists(file_path):
         # Se il file esiste, lo carichiamo
         df = pd.read_csv(file_path)
         print(f"File caricato con successo.")
@@ -55,32 +55,42 @@ def main():
 
     #get the list of folders in the main_source_path 
     folders = get_subfolder_names(main_source_path)
-    
+    rows_to_add = []
+    #print(folders)
+
     for i,q in enumerate(q_to_transfer):
         count_questionnairres = 0
         #get the list of IDs for which i have the Q column equal to q in the df
         transferred_ids = df[df['Q'] == q]['ID'].tolist()
+        #print(transferred_ids)
         #get the list of folders that are not in the transferred_ids list
         updated_folders = [folder for folder in folders if folder not in transferred_ids]
+        #print(len(updated_folders))
         for folder in updated_folders:
             #check if there is a folder named q in the folder
             q_folder_path = os.path.join(main_source_path, folder, f"{q}")
             if os.path.exists(q_folder_path):
+                #print(1)
                 #transfer all the png files in the q_folder_path to the main_destination_path/q/ folder
                 destination_q_folder_path = os.path.join(main_destination_path, f"q_{q}")
                 os.makedirs(destination_q_folder_path, exist_ok=True)
                 #get the list of png files filenames in the q_folder_path
                 png_files = [f for f in os.listdir(q_folder_path) if f.endswith('.png')]
+                #print(png_files)
                 #transfer the png files to the destination_q_folder_path
                 copy_selected_files(q_folder_path, destination_q_folder_path, png_files, folder)
                 count_questionnairres += 1
             #add the id and the q to the df
             new_row = {'ID': folder, 'Q': q}
-            df = df.append(new_row, ignore_index=True)
+            rows_to_add.append(new_row)
 
             if count_questionnairres >= num_to_transfer[i] and num_to_transfer[i] > 0:
                 print(f"Transferred {count_questionnairres} questionnaires for Q{q}. Moving to the next questionnaire.")
                 break
+        #break
+    if rows_to_add:
+        new_rows_df = pd.DataFrame(rows_to_add)
+        df = pd.concat([df, new_rows_df], ignore_index=True)
     #save the df to the csv file
     df.to_csv(file_path, index=False)
                 

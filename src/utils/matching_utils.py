@@ -501,7 +501,7 @@ def perform_template_matching(pairs_to_consider,page_dictionary,template_diction
         #the input is a list of numbers
         new_pairs_to_consider=[]
         for i in pairs_to_consider:
-            new_pairs_to_consider.append([i,i])
+            new_pairs_to_consider.append([i,i]) 
         pairs_to_consider = new_pairs_to_consider[:]
     
     for pair in pairs_to_consider:

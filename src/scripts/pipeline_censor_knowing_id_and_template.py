@@ -45,12 +45,13 @@ logger = logging.getLogger(__name__)
 PDF_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers"#additional"#100263_template"
 CSV_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\ref_pdf_Qx"#additional"#100263_template"
 TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_template"#additional"#100263_template"
-SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\censored_for_yolo" #censored_for_yolo" #test_censoring_pipeline #additional"#100263_template" 
+SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline" #censored_for_yolo" #test_censoring_pipeline #additional"#100263_template" 
 
 
 # other variables
-QUESTIONNAIRE = "10"
-N_subjects = 20 #how many subject to consider before stopping 
+SAVE_FILENAMES = False
+QUESTIONNAIRE = "8"
+N_subjects = 2 #how many subject to consider before stopping 
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
 #SAVE_ANNOTATED_TEMPLATES=True
@@ -187,6 +188,26 @@ def main():
         df.to_csv(csv_modified_path)
     
     df = load_preprocessed_df(csv_modified_path,used_col_name=USED_COL,id_col_name=ID_COL) #load the preprocessed df
+
+    # save a txt file with the list of the pdf names to process 
+    filenames_path = os.path.join(updated_csv_paths,f"pdf_filepaths_{QUESTIONNAIRE}.txt") 
+
+    if SAVE_FILENAMES:
+        # 1. Get your list of paths
+        sorted_names = sorted(df[FILENAME_COL].tolist())
+        pdf_paths_temp = get_file_paths(sorted_names, questionnairres_log_path, file_logger) 
+        
+        # 2. Open with newline='\n' to prevent Windows CRLF (\r\n)
+        # This is the "magic" fix for the 'Cannot stat' error
+        with open(filenames_path, 'w', encoding='utf-8', newline='\n') as f:
+            for filename in pdf_paths_temp:
+                # os.path.basename gets just 'image.pdf' from 'C:/path/to/image.pdf'
+                clean_name = os.path.basename(filename)
+                f.write(f"{clean_name}\n")
+        
+        print(f"✅ Saved {len(pdf_paths_temp)} filenames to {filenames_path} with Unix line endings.")
+        return 0
+
     file_logger.write(df.head(10).to_string()) #log the first 10 lines of the df to check it is correct
 
     #load the annotation files (full paths and names)
@@ -205,9 +226,9 @@ def main():
     file_logger.write(pages_in_annotation)
 
     #select only the ids in a given list
-    '''selected_ids = ['A2V7A3H3','A0F0P4I2']
+    selected_ids = ['B2F6Q1S4']
     df = df[df[ID_COL].isin(selected_ids)]
-    N_subjects = len(df[ID_COL].unique())+1'''
+    N_subjects = len(df[ID_COL].unique())+1
 
     # Group by the 'id' column and iterate over each group
     count=0
@@ -234,6 +255,11 @@ def main():
         #i extract the images and order them based on the expeected ordering
         #in some cases pdf_paths is a single multipage pdfs in others are multiple one page pdfs files
         list_of_images, extraction_log = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False, test_log={})
+        file_logger.write("Debug image information after extraction:")
+        for i,image in enumerate(list_of_images):
+            if image is None:
+                file_logger.write(f"Warning, image {i} for ID {unique_id} is None after extraction, this image will be ignored in the following steps")
+            file_logger.write(f"Image {i} for ID {unique_id} has shape {image.shape} and dtype {image.dtype}")
         #list_of_images = list_of_images[:-2]+list_of_images[:2]
         pages_to_consider = [i+1 for i in range(len(list_of_images))]
         test_log = initialize_warning_log(pages_to_consider)

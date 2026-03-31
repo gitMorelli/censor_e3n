@@ -47,8 +47,12 @@ def pdf_to_images(pdf_path):
 
 def get_n_pages(pdf_path): 
     ''' given a pdf file it returns the number of pages'''
-    with fitz.open(pdf_path) as doc:
-        return len(doc)
+    try:
+        with fitz.open(pdf_path) as doc:
+            return len(doc)
+    except Exception as e:
+        print(f"Error opening PDF: {pdf_path} | {e}")
+        return 0
 
 def save_as_is(pdf_path,i,out_path, return_image = False):
     with fitz.open(pdf_path) as doc:
@@ -63,11 +67,42 @@ def save_as_is(pdf_path,i,out_path, return_image = False):
         base_image = doc.extract_image(xref)
         image_bytes = base_image["image"]
         ext = base_image["ext"]
+        #size_before = len(image_bytes) # Size in bytes 
+        #print(1)
+        #print(base_image["colorspace"])
         if return_image:
             # Convert bytes to a numpy array
             nparr = np.frombuffer(image_bytes, np.uint8)
             # Decode the array into an OpenCV image (BGR format)
-            cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            #cv_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            cv_img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+            '''# 3. Metrics AFTER imdecode
+            shape_after = cv_img.shape
+            # .nbytes returns the total bytes consumed by the elements of the array
+            size_after = cv_img.nbytes 
+            
+            print(f"--- Image Metrics (xref: {xref}) ---")
+            print(f"Size Before (Compressed): {size_before / 1024:.2f} KB")
+            print(f"Size After (In RAM):      {size_after / 1024:.2f} KB")
+            print(f"Inflation Factor:         {size_after / size_before:.2f}x")
+            print(f"Array Shape (H, W, C):    {shape_after}")
+            print(f"Data Type:                {cv_img.dtype}")'''
+
+            # --- SILENT GRAYSCALE FALLBACK ---
+            if cv_img is None:
+                width = base_image.get("width", 100)
+                height = base_image.get("height", 100)
+                
+                # Creates a 2D array (height, width) with no color channels
+                # 255 is white, 0 is black
+                cv_img = np.full((height, width), 255, dtype=np.uint8)
+            else:
+                width = cv_img.shape[1]
+                height = cv_img.shape[0]
+                if width <100 or height < 100:
+                    # If the image is too small, create a blank white image of the same size
+                    cv_img = np.full((100, 100), 255, dtype=np.uint8)
+
             return cv_img
         else:
             out_path = out_path+f".{ext}"
@@ -116,12 +151,17 @@ def process_pdf_files(n_quest,pdf_files,save_path, save=True, test_log = {}):
     
     individual_pages = []
     multi_pages = []
+    count_failed = 0
     for pdf_file in pdf_files:
         n_pages=get_n_pages(pdf_file)
         if n_pages == 1:
             individual_pages.append(pdf_file)
-        else:
+        elif n_pages > 1:
             multi_pages.append((n_pages, pdf_file))
+        else:
+            count_failed += 1
+    if count_failed == len(pdf_files):
+        raise ValueError(f"All PDF files failed to open. Please check the files")
     
     images_list = []
     already_extracted_pages=0
