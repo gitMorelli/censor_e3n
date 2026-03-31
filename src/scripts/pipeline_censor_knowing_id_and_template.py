@@ -50,7 +50,7 @@ SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline" #c
 
 # other variables
 SAVE_FILENAMES = False
-QUESTIONNAIRE = "8"
+QUESTIONNAIRE = "7"
 N_subjects = 2 #how many subject to consider before stopping 
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
@@ -226,7 +226,7 @@ def main():
     file_logger.write(pages_in_annotation)
 
     #select only the ids in a given list
-    selected_ids = ['B2F6Q1S4']
+    selected_ids = ['E0E6Z3F5']
     df = df[df[ID_COL].isin(selected_ids)]
     N_subjects = len(df[ID_COL].unique())+1
 
@@ -341,11 +341,15 @@ def main():
                                                         gap_threshold=GAP_THRESHOLD_OCR, max_dist=MAX_DIST_OCR)
                 #update the test log with the ocr results
                 for img_id in problematic_pages:
-                    test_log[img_id]['matched_ocr'] = page_dictionary[img_id]['match_ocr']
-                    test_log[img_id]['confidences_ocr'] = page_dictionary[img_id]['confidence_template']
-                    #i give a warning if the match computed with ocr is  below the threshold
-                    test_log[img_id]['warning_ocr'] = -1*test_log[img_id]['confidences_ocr']+1>MAX_DIST_OCR #i convert back to the cost for comparing with the threshold
-
+                    if page_dictionary[img_id]['match_ocr'] is not None:
+                        test_log[img_id]['matched_ocr'] = page_dictionary[img_id]['match_ocr']
+                        test_log[img_id]['confidences_ocr'] = page_dictionary[img_id]['confidence_template']
+                        #i give a warning if the match computed with ocr is  below the threshold
+                        test_log[img_id]['warning_ocr'] = -1*test_log[img_id]['confidences_ocr']+1>MAX_DIST_OCR #i convert back to the cost for comparing with the threshold
+                    else:
+                        test_log[img_id]['matched_ocr'] = None
+                        test_log[img_id]['confidences_ocr'] = 0
+                        test_log[img_id]['warning_ocr'] = True
                     #i give a warnign if the cost is over the maximum cost defined by the threshold
                 test_log['report_ocr'] = copy.deepcopy(report)
                 debug_print_associations(pages_to_consider,page_dictionary,file_logger)

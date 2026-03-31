@@ -587,6 +587,7 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
                                                                    compute_report=True, gap_threshold=gap_threshold, max_dist=max_dist)
     else:
         matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
+    print(len(matches_sorted))
     for match in matches_sorted:
         #cost is - the number of good matches
         img_id = match["page_index"] 
