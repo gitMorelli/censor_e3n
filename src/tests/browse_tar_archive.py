@@ -56,7 +56,7 @@ def main():
     args = parse_args()
     #filename ="A0A0D6X7.tar"
     main_path = "//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\censored_files\\"
-    if QUESTIONNAIRE in ["13","9","8"]:
+    if QUESTIONNAIRE in ["13","9","8","7","6","5","4","3","2","1","10"]:
         tar_path = os.path.join(main_path,f"Q{QUESTIONNAIRE}\\images")
     elif QUESTIONNAIRE in ["12","11"]:
         tar_path = os.path.join(main_path,f"Q{QUESTIONNAIRE}\\archived_{QUESTIONNAIRE}")
@@ -68,6 +68,10 @@ def main():
     if os.path.exists(out_path):
         remove_folder(out_path)
     create_folder(out_path)
+    # create a file to write the stats on the warnings
+    warning_path = os.path.join(out_path,"stats_warnings.txt")
+    with open(warning_path, "w") as f:
+        f.write(f"Stats on warnings for questionnaire Q{QUESTIONNAIRE}\n")
 
     #load the csv file
     df = pd.read_csv(ref_path)
@@ -78,20 +82,32 @@ def main():
     
     df = analysis(df)
 
+    filtered_df=df[(df["Warning_ordering"]=="First stage") | (df["Warning_ordering"]=="Second stage")]
+    with open(warning_path, "a") as f:
+        f.write(f"\n\nIDs that didn't reach ocr: {len(filtered_df)} out of {len(df)}\n")
+
     #rows that have Warning_censoring==No warning and Warning_ordering==First stage or Warning_ordering==Second stage
     filtered_df=df[(df["Warning_censoring"]=="No warning") & ((df["Warning_ordering"]=="First stage") | (df["Warning_ordering"]=="Second stage"))]
     #random pages
     extract_random_examples(filtered_df,tar_path,out_path,type_of_analysis='standard',n_samples=5)
 
+
     #analyze pages with ordering warnings
     #filtered_df=df[df["Warning_ordering"]=="OCR stage, pages with warning:   1/20"]
     filtered_df = df[df["Warning_ordering"].str.contains("OCR", na=False)]
     extract_random_examples(filtered_df,tar_path,out_path,type_of_analysis='ordering',n_samples=5)
+    with open(warning_path, "a") as f:
+        f.write(f"\n\nIDs with ordering warnings: {len(filtered_df)}\n")
+        #get unique values and their count for the column "Warning_ordering" in the filtered df
+        f.write(f"Unique values for Warning_ordering in the filtered df:\n")
+        f.write(f"{filtered_df['Warning_ordering'].value_counts()}\n")
 
     #analyze pages with censoring warnings
     #filtered_df=df[df["Warning_censoring"]=="pages censored with large boxes:   1/20"]
     filtered_df = df[df["Warning_censoring"].str.contains("large", na=False)]
     extract_random_examples(filtered_df,tar_path,out_path,type_of_analysis='censoring',n_samples=5)
+    with open(warning_path, "a") as f:
+        f.write(f"\n\nIDs with censoring warnings: {len(filtered_df)}\n")
     '''list_images = process_and_extract_tar(tar_path, out_path)
 
     # OpenCV uses BGR, Matplotlib uses RGB

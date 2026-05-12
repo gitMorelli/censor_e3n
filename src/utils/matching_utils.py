@@ -277,7 +277,7 @@ def match_pages_text(pages_list,templates_to_consider,similarity, compute_report
         matches.append({
             "page_index": pages_list[i],
             "template_index": templates_to_consider[j],
-            "similarity": int(-1*(cost[i, j]-1)), # i invert again the formula to get the similarity
+            "similarity": -1*(cost[i, j]-1), # i invert again the formula to get the similarity
         })
     
     if compute_report:
@@ -580,19 +580,22 @@ def perform_ocr_matching(pages_step_3, problematic_templates_step_2,page_diction
                 page_text = extract_features_from_text_region(patch, mode=mode, verbose=False, psm=template_dictionary[t_id]['psm'])['text']
             else:
                 page_text = page_dictionary[img_id]['text']
+            #print('extracted text: ',page_text, 'vs', template_dictionary[t_id]['text'])
             similarity[ii,jj] = compare_pages_same_section(page_text, template_dictionary[t_id]['text'])[text_similarity_metric]
+            #print(similarity[ii,jj])
     #print(similarity) 
     if compute_report:
         matches_sorted, cost, report = match_pages_text(pages_step_3,problematic_templates_step_2,similarity, 
                                                                    compute_report=True, gap_threshold=gap_threshold, max_dist=max_dist)
     else:
         matches_sorted, cost = match_pages_text(pages_step_3,problematic_templates_step_2,similarity)
-    print(len(matches_sorted))
+    #print(len(matches_sorted))
     for match in matches_sorted:
         #cost is - the number of good matches
         img_id = match["page_index"] 
         t_id = match["template_index"]
         similarity_score = match["similarity"]
+        print('similarity score: ', similarity_score)
         template_dictionary[t_id]['final_match']=img_id 
         page_dictionary[img_id]['matched_page']=t_id
         page_dictionary[img_id]['match_ocr']=t_id

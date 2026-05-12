@@ -14,6 +14,8 @@ from pympler import asizeof
 import psutil
 import csv
 
+
+
 from src.utils.convert_utils import process_pdf_files
 #from src.utils.convert_utils import pdf_to_png_images
 from src.utils.file_utils import list_files_with_extension, load_template_info
@@ -42,6 +44,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Set the logging level for matplotlib.font_manager to WARNING or higher
+logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+
 PDF_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\Fichiers"#additional"#100263_template"
 CSV_LOAD_PATH="//smb-recherche-s1.prod-powerscale.intra.igr.fr/E34N_HANDWRITING$\\ref_pdf_Qx"#additional"#100263_template"
 TEMPLATES_PATH="//vms-e34n-databr/2025-handwriting\\data\\annotations\current_template"#additional"#100263_template"
@@ -50,7 +55,7 @@ SAVE_PATH="//vms-e34n-databr/2025-handwriting\\data\\test_censoring_pipeline" #c
 
 # other variables
 SAVE_FILENAMES = False
-QUESTIONNAIRE = "7"
+QUESTIONNAIRE = "8"
 N_subjects = 2 #how many subject to consider before stopping 
 ID_COL = 'e3n_id_hand'
 FILENAME_COL = 'object_name'
@@ -213,6 +218,7 @@ def main():
     #load the annotation files (full paths and names)
     annotation_file_names, annotation_files = load_annotation_tree(file_logger, templates_path)
     #i select only the template of interest (eg for Q5 only doc_5.json)
+    print(len(annotation_files))
     selected_templates = select_specific_annotation_file(QUESTIONNAIRE)
     file_logger.write(selected_templates)
 
@@ -226,7 +232,7 @@ def main():
     file_logger.write(pages_in_annotation)
 
     #select only the ids in a given list
-    selected_ids = ['E0E6Z3F5']
+    selected_ids = ['A0K1S1A8']
     df = df[df[ID_COL].isin(selected_ids)]
     N_subjects = len(df[ID_COL].unique())+1
 
@@ -256,6 +262,7 @@ def main():
         #in some cases pdf_paths is a single multipage pdfs in others are multiple one page pdfs files
         list_of_images, extraction_log = process_pdf_files(QUESTIONNAIRE,pdf_paths,None,save=False, test_log={})
         file_logger.write("Debug image information after extraction:")
+        file_logger.write(f"Number of pages extracted for ID {unique_id}: {len(list_of_images)}")
         for i,image in enumerate(list_of_images):
             if image is None:
                 file_logger.write(f"Warning, image {i} for ID {unique_id} is None after extraction, this image will be ignored in the following steps")
@@ -419,7 +426,9 @@ def main():
                 save_these_boxes(output_path,img,[censor_boxes,adjusted_censor_boxes],list_of_colors=['red','green'])
             #i also rescale to thecorrect resolution (image scale instead of template scale)
             censor_boxes = rescale_box_coords_given_resolutions(censor_boxes, template['template_size'], img_size)
-            censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING)
+
+            #modify (this line is broken)
+            #censor_boxes = adjust_boundary_boxes(censor_boxes, template['template_size'], img_size , epsilon=EPSILON_EDGE_MATCHING)
 
             #### RESCALE BOXES based on resolution of image and template ##########
             selected_alignement_method = ALIGNEMENT_METHOD
@@ -457,12 +466,17 @@ def main():
                 test_log[img_id]['censored_with_large_boxes'] = True
                 #censor_boxes,partial_coverage = get_censor_boxes(root,matched_id) #we need to refer to the correct id of the template
                 #in this case i censor with the extended regions because i cannot be sure of the alignement in any way
+                #print("Alignement failed for page ", img_id, "matched template page ", matched_id, "censoring with large boxes")
+                #print(len(censor_boxes),len(partial_coverage))
+                #print(censor_boxes)
                 save_censored_image(img, censor_boxes, censored_images_path,unique_id,QUESTIONNAIRE,matched_id,
                                     warning='',partial_coverage=partial_coverage,
                                     thickness_pct=THICKNESS_PCT, spacing_mult=SPACING_MULT,logger=image_time_logger,
                                     page_w=img_size[0],page_frac=PAGE_FRAC,area_frac=AREA_FRAC)   
                 save_partial_regions_to_csv(censor_boxes,partial_coverage, matched_id, partial_boxes_coords_path)
                 continue
+            #print(len(censor_boxes),len(partial_coverage))
+            #print(censor_boxes)
             #DEBUG
             #force parameters of alingement to debug
             #scale_factor=1.0
@@ -598,10 +612,12 @@ def get_file_paths(filenames,pdf_load_path,logger):
 
 def select_specific_annotation_file(questionnaire):
     #i will select only one annotation file from the library
-    if questionnaire in [f"{i}" for i in range(2,14)]:
+    if questionnaire in ["2","3","4","5","6","7","9","10","11","12","13"]:
         selected_templates = [f"q_{questionnaire}"]
     elif questionnaire == "1":
         selected_templates = ["q_1","q_1v2"]
+    elif questionnaire == "8":
+        selected_templates = ["q_8","q_8v2"]
     return selected_templates
 
 def select_template(pages_in_annotation,questionnaire,annotation_roots,npy_data, list_of_images, logger):
@@ -636,7 +652,7 @@ def select_template(pages_in_annotation,questionnaire,annotation_roots,npy_data,
                                                             template_dictionary,properties=['phash'])
             
             #perform phash matching
-            page_dictionary, report = perform_phash_matching(page_dictionary,template_dictionary, templates_to_consider, templates_to_consider, 
+            page_dictionary, report = perform_phash_matching(page_dictionary,template_dictionary, pages_to_consider, templates_to_consider, 
                             gap_threshold=GAP_THRESHOLD_PHASH,max_dist=MAX_DIST_PHASH, compute_report=True)
             total_cost = report['total_cost']
 
@@ -647,7 +663,20 @@ def select_template(pages_in_annotation,questionnaire,annotation_roots,npy_data,
         logger.write(f"Selected template: {i} with total cost {max_cost}")
         
         return report,selected_template_index,selected_confidence,annotation_roots[selected_template_index],npy_data[selected_template_index]
-            
+    elif questionnaire == "8":
+        # browse the list of images and get the h and w for each
+        count = 0
+        for img in list_of_images:
+            if img is not None:
+                h,w = img.shape
+                ratio = abs(w-h)/max(w,h)
+                if ratio<0.1: #if the image is almost square i select template q_8v2 otherwise q_8
+                    count+=1
+        if count>=1:
+            selected_template_index=1
+        else:
+            selected_template_index=0
+        return count,selected_template_index,None,annotation_roots[selected_template_index],npy_data[selected_template_index]
     else:
         return None,0, None, annotation_roots[0],npy_data[0]
 
