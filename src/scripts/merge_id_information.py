@@ -214,6 +214,7 @@ def prepare_for_matching(df):
 def matching(df,n_matches,age_at_entry_col="years_int",time_of_exit_col="date_suivi_diag1_quest",id_col="ident_projet", 
     diag_col="diag_park_final1_quest",matching_cols=[],type_of_matching="exact",age_mode=0):
 
+    df_w_id_as_index = df.set_index(id_col).copy()
     #get the unique ids of the cases (diag_col==1)
     case_ids = df.loc[df[diag_col] == 1, id_col].unique().tolist()
     cases_with_no_questionnaires = []
@@ -228,7 +229,7 @@ def matching(df,n_matches,age_at_entry_col="years_int",time_of_exit_col="date_su
         #get the date of exit for this case
         case_exit_date = df.loc[df[id_col] == case, time_of_exit_col].values[0]
         #get all rows in the dataframe with date of exit before the case exit date
-        df_filtered = df.loc[df[time_of_exit_col] < case_exit_date] 
+        df_filtered = df.loc[df[time_of_exit_col] < case_exit_date].copy() 
 
         # get the age of entry for this case
         case_entry_date = df.loc[df[id_col] == case, age_at_entry_col].values[0]
@@ -256,20 +257,23 @@ def matching(df,n_matches,age_at_entry_col="years_int",time_of_exit_col="date_su
         questionnaires_to_match = [f"q_{i}_grid_file_avail" for i in range(1, last_q_filled+1)]
         #get the value of the columns q_i_avail for this case
         case_q_avail = df.loc[df[id_col] == case, questionnaires_to_match].values[0]
+        #print(case_q_avail)
         if  "exact" in type_of_matching:
             #keep only the rows with the same value for the columns q_i_avail as the case
             if type_of_matching == "exact":
                 for i, q in enumerate(questionnaires_to_match):
                     df_filtered = df_filtered.loc[df_filtered[q] == case_q_avail[i]]
             elif type_of_matching == "exact_w_fallback":
+                df_filtered_temp = df_filtered.copy()
                 for i, q in enumerate(questionnaires_to_match):
-                    df_filtered_temp = df_filtered.loc[df_filtered[q] == case_q_avail[i]]
+                    df_filtered_temp = df_filtered_temp.loc[df_filtered_temp[q] == case_q_avail[i]].copy()
                 if df_filtered_temp.shape[0] > int(n_matches/2):
                     df_filtered = df_filtered_temp
                 else:
                     #if the number of rows is too low, keep the rows with at least the same questionnaires filled as the case
                     for i, q in enumerate(questionnaires_to_match):
                         df_filtered = df_filtered.loc[df_filtered[q] >= case_q_avail[i]]
+                    #print("Non standard")
         elif type_of_matching == "at_least":
             #keep the rows with at least the same questionnaires filled as the case (if case has q1 and q2 filled, keep the rows with at least q1 and q2 filled, but they can have more)
             for i, q in enumerate(questionnaires_to_match):
@@ -295,14 +299,16 @@ def matching(df,n_matches,age_at_entry_col="years_int",time_of_exit_col="date_su
         else:
             cases_with_no_matches.append(case)
             continue
-
-        #select the case and the matched controls from the original dataframe 
-        selected = df.loc[df[id_col].isin([case] + matched_controls)].copy()
+            
+        # 1. Create your list of IDs (including duplicates)
+        all_ids = [case] + matched_controls
+        selected = df_w_id_as_index.loc[all_ids].reset_index().copy()
         selected['match_group'] = matched_till_now+1
         matched_till_now += 1
         #create a column that indicates if the row is a case or a control
         selected['case_control'] = (selected[id_col] == case).astype(int)
         selected['last_avail_q'] = last_q_filled
+        selected['remaining_subjects'] = n_remaining_subj
         matched_results.append(selected.copy())
     #concatenate the matched results for all cases
     if len(matched_results) > 0:
@@ -367,6 +373,36 @@ def check_validity_final_table(final_table):
         example_id = final_table[(final_table[avail_censor_col] == 1) & (final_table[avail_grid_col] == 0)]['ident_projet'].values
         if len(example_id) > 0:
             print(f"Example id where {avail_censor_col} is 1 and {avail_grid_col} is 0: {example_id[0]}")
+
+def select_ids_for_handedness_model(df,seed=42):
+    handedness_col = "lateralite"
+    questionnaire_to_use = "5"
+    availability_col = f"q_{questionnaire_to_use}_grid_file_avail"
+    extraction_statistics_col = [f"q_{questionnaire_to_use}_num_X", f"q_{questionnaire_to_use}_num_text", f"q_{questionnaire_to_use}_num_digit"]
+    test_pctg = 0.2
+    val_pctg = 0.1
+    print(f"Total number of rows in the dataframe: {df.shape[0]}")
+    #print(df[handedness_col].head(20)) -> missing values are loaded as Nan
+    #select only the rows with availability_col==1 and laterality not null
+    df_filtered = df[(df[availability_col] == 1) & (df[handedness_col].notna())].copy()
+    print(f"Number of rows with {availability_col}==1 and {handedness_col} not null: {df_filtered.shape[0]}")
+    #keep only the columns ident_projet, laterality 
+    df_filtered = df_filtered[['ident_projet', handedness_col] + extraction_statistics_col]
+    #shuffle randomly the rows of the dataframe and reset the index
+    df_filtered = df_filtered.sample(frac=1, random_state=seed).reset_index(drop=True)
+    #split the dataframe into train, val and test
+    n = df_filtered.shape[0]
+    n_test = int(n * test_pctg)
+    n_val = int((n-n_test) * val_pctg)
+    print(f"Number of rows in the test set: {n_test}")
+    print(f"Number of rows in the validation set: {n_val}")
+    print(f"Number of rows in the train set: {n - n_test - n_val}")
+    #create a column with the split (train, val, test)
+    df_filtered['split'] = 'train'
+    df_filtered.loc[:n_val, 'split'] = 'val'
+    df_filtered.loc[n_val:n_val+n_test, 'split'] = 'test'
+    return df_filtered
+
 
 def main():
  
@@ -482,19 +518,30 @@ def main():
 
 
 CREATE_DF = False
-MATCH = True
-TYPE_OF_MATCHING = "at_least" #exact or exact_w_fallback or at_least
-AGE_MODE=1 #0 means exact matching on age, 1 means matching with age within 1 year, 2 means matching with age within 2 years, etc.
-SHOW = True
+GENERATE_HANDEDNESS_IDS = True
+MATCH = False
+TYPE_OF_MATCHING = "exact_w_fallback" #exact or exact_w_fallback or at_least
+AGE_MODE=0 #0 means exact matching on age, 1 means matching with age within 1 year, 2 means matching with age within 2 years, etc.
+SHOW_MATCHED = False
 if __name__ == "__main__":
     #explore_covariates()
     #explore_extraction_data()
     if CREATE_DF:
         final_table = main()
         check_validity_final_table(final_table)
-        final_table = prepare_for_matching(final_table)
+        final_table.to_csv(os.path.join(OUTPUT_PATH, "final_table_with_all_info.csv"), index=False, encoding='cp1252')
+        final_table = prepare_for_matching(final_table) #automatically save the results to OUTPUT_PATH
+    
+    if GENERATE_HANDEDNESS_IDS:
+        final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_with_all_info.csv"), encoding='cp1252')
+        select_ids_for_handedness_model(final_table)
+        df_splitted = select_ids_for_handedness_model(final_table)
+        df_splitted.to_csv(os.path.join(OUTPUT_PATH, "handedness_model_ids.csv"), index=False, encoding='cp1252')
     
     if MATCH:
+        #set seed for reproducibility
+        seed = 42
+        np.random.seed(seed)
         final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching.csv"), encoding='cp1252')
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -504,9 +551,9 @@ if __name__ == "__main__":
         statistics_on_matches.to_csv(os.path.join(OUTPUT_PATH, "matching_statistics.csv"), index=False, encoding='cp1252')
         failed_cases.to_csv(os.path.join(OUTPUT_PATH, "failed_cases.csv"), index=False, encoding='cp1252')
 
-    if SHOW:
+    if SHOW_MATCHED:
         questionnairres = [str(i) for i in range(1,14)]
-        filter_cols = ['ident_projet', 'match_group','case_control','diag_park_final1_quest','years_int','date_suivi_diag1_quest','last_avail_q']
+        filter_cols = ['ident_projet', 'match_group','case_control','diag_park_final1_quest','remaining_subjects','years_int','date_suivi_diag1_quest','last_avail_q']
         filter_cols.extend([f'q_{q}_grid_file_avail' for q in questionnairres])
         filter_cols.extend([f"dateq{i}" for i in range(1,14)])
         final_matched_df = pd.read_csv(os.path.join(OUTPUT_PATH, "final_matched_df.csv"), encoding='cp1252')
