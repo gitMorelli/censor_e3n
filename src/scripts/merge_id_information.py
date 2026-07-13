@@ -11,7 +11,9 @@ import gc
 import pandas as pd
 import warnings
 import openpyxl
-
+import pyarrow as pa
+import pyarrow.parquet as pq
+from datetime import datetime, timedelta
 
 
 logging.basicConfig( 
@@ -144,7 +146,46 @@ def explore_extraction_data():
     print(extraction_data.head(10))
     #print(extraction_data.describe())
 
-def prepare_for_matching(df):
+def assign_splits(df, n_train, n_val, n_test, split_col="split", 
+                  shuffle=True, seed=42):
+    """
+    Assign train/val/test labels to dataframe rows in a `split` column.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    n_train, n_val, n_test : int
+        Number of rows for each split. Must sum to <= len(df);
+        leftover rows get NaN.
+    split_col : str
+        Name of the column to write the split labels into.
+    shuffle : bool
+        Whether to shuffle rows before assigning splits.
+    seed : int or None
+        Random seed for reproducibility.
+    """
+    total = n_train + n_val + n_test
+    if total > len(df):
+        raise ValueError(f"Requested {total} rows but dataframe has {len(df)}")
+
+    df = df.copy()
+
+    if shuffle:
+        rng = np.random.default_rng(seed)
+        order = rng.permutation(len(df))
+    else:
+        order = np.arange(len(df))
+
+    labels = np.full(len(df), None, dtype=object)
+    labels[order[:n_train]] = "train"
+    labels[order[n_train:n_train + n_val]] = "val"
+    labels[order[n_train + n_val:total]] = "test"
+
+    df[split_col] = labels
+    return df
+
+def prepare_for_matching(df,split_before = False, n_test=200, f_val=0.1):
+    '''n_test is the number of PD subjects to put in the test set, f_val the fraction of remaining subjects to put in validation'''
     from pandas.api.types import is_datetime64_any_dtype as is_date
 
     #columns necessary for matching
@@ -155,6 +196,9 @@ def prepare_for_matching(df):
     #other columns I want to keep in the data
     columns_of_interest.extend(['age_suivi_diag1_quest','cas_prev_dg1','lateralite','etudegp','actprofq2',
                                 'profq2','rempli_seulq11','rempli_seulq12'])
+    columns_of_interest.extend([f'q_{q}_num_X' for q in range(1,14)]) 
+    columns_of_interest.extend([f'q_{q}_num_text' for q in range(1,14)])
+    columns_of_interest.extend([f'q_{q}_num_digit' for q in range(1,14)])
 
     df_filtered = df[columns_of_interest]
 
@@ -230,12 +274,34 @@ def prepare_for_matching(df):
 
     print("dtypes: ", df_filtered.dtypes)
 
-    #print(is_date(df_filtered['date_suivi_diag1_quest']))    # Returns: True
-    #print(is_date(df_filtered['dateq1']))  # Returns: False (it's just text)
+    if split_before:
+        print("###### Splitting the data into train, val and test sets before matching ######")
+        #select the rows with diag_park_final1_quest==1 and split them according to parameters
+        df_cases = df_filtered[df_filtered['diag_park_final1_quest']==1]
+        n_tot_cases = df_cases.shape[0]
+        n_train_val_cases = n_tot_cases - n_test 
+        n_val_cases = int(f_val * n_train_val_cases)
+        n_train_cases = n_train_val_cases - n_val_cases
+        df_cases = assign_splits(df_cases, n_train_cases, n_val_cases, n_test, split_col="split", shuffle=True, seed=42)
 
-    #save the filtered dataframe with the new columns for the matching phase
-    df_filtered.to_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching.csv"), index=False)
-    #df_filtered.to_parquet(os.path.join(OUTPUT_PATH, "final_table_for_matching.parquet"))
+        #select the rows with diag_park_final1_quest==0 and split them according to parameters
+        df_controls = df_filtered[df_filtered['diag_park_final1_quest']==0]
+        n_tot_controls = df_controls.shape[0]
+        n_test_controls = int(n_test/n_tot_cases * n_tot_controls) #i take the same fraction of controls as i did for cases for the test set (and other splits)
+        n_train_val_controls = n_tot_controls - n_test_controls
+        n_val_controls = int(f_val * n_train_val_controls)
+        n_train_controls = n_train_val_controls - n_val_controls
+        df_controls = assign_splits(df_controls, n_train_controls, n_val_controls, n_test_controls, split_col="split", shuffle=True, seed=42)
+
+        df_final = pd.concat([df_cases, df_controls], ignore_index=True)
+
+        df_final.to_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching_splitted.csv"), index=False)
+
+        return df_final
+    else:
+        #save the filtered dataframe with the new columns for the matching phase
+        df_filtered.to_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching.csv"), index=False)
+        #df_filtered.to_parquet(os.path.join(OUTPUT_PATH, "final_table_for_matching.parquet"))
 
     return df_filtered
 
@@ -529,7 +595,7 @@ def select_ids_for_handedness_model(df,n_controls,seed=42):
     #keep only selected columns
     statistics_cols=[]
     for q in all_questionnaires_to_use:
-        statistics_cols.extend([f"q_{q}_num_X", f"q_{q}_num_text", f"q_{q}_num_digit"])
+        statistics_cols.extend([f"q_{q}_num_X", f"q_{q}_num_text", f"q_{q}_num_digit", f"q_{q}_num_sent"])
     df_filtered = df_filtered[['ident_projet', handedness_col, 'grid_file_category'] + statistics_cols + availability_columns]
 
     df_to_concat = []
@@ -775,13 +841,14 @@ def main():
 
     return final_table
 
-def prepare_table_for_training(filename,seed=42):
+def prepare_table_for_training(filename,output_path,seed=42, split_before = False):
     val_pctg = 0.1
     test_pctg = 0.1
 
     df = pd.read_csv(filename, encoding='cp1252')
     group_col = 'match_group'
     warning_col = "rempliseul_warning"
+    questionnairres = [str(i) for i in range(1,14)]
 
     #adding warning for rempliseul
     warn_cond1 = df["rempli_seulq11"] == 0
@@ -801,43 +868,45 @@ def prepare_table_for_training(filename,seed=42):
     df_filtered = df_filtered[~df_filtered[group_col].isin(groups_with_warning)].copy()
     print(f"Length of the dataframe after removing groups with warning: {len(df_filtered)}")
 
-    #get the unique values of the group_col 
-    unique_groups = df_filtered[group_col].unique()
-    n = len(unique_groups)
-    n_test = int(n * test_pctg)
-    n_val = int((n-n_test) * val_pctg)
-    n_train = n - n_test - n_val
-    #shuffle the unique groups and split them into train, val and test
-    np.random.seed(seed)
-    np.random.shuffle(unique_groups)
-    train_groups = unique_groups[:n_train]
-    val_groups = unique_groups[n_train:n_train+n_val]
-    test_groups = unique_groups[n_train+n_val:]
-    #create a new column split and set it to train, val or test according to the group_col
-    df_filtered['split'] = 'train'
-    df_filtered.loc[df_filtered[group_col].isin(val_groups), 'split'] = 'val'
-    df_filtered.loc[df_filtered[group_col].isin(test_groups), 'split'] = 'test'
-    print(f"Number of ids in the train set: {(df_filtered['split'] == 'train').sum()}")
-    print(f"Number of ids in the val set: {(df_filtered['split'] == 'val').sum()}")
-    print(f"Number of ids in the test set: {(df_filtered['split'] == 'test').sum()}")
+    #i have to split taking in account the case-control matching if i didn't split before
+    if not split_before:
+        #get the unique values of the group_col 
+        unique_groups = df_filtered[group_col].unique()
+        n = len(unique_groups)
+        n_test = int(n * test_pctg)
+        n_val = int((n-n_test) * val_pctg)
+        n_train = n - n_test - n_val
+        #shuffle the unique groups and split them into train, val and test
+        np.random.seed(seed)
+        np.random.shuffle(unique_groups)
+        train_groups = unique_groups[:n_train]
+        val_groups = unique_groups[n_train:n_train+n_val]
+        test_groups = unique_groups[n_train+n_val:]
+        #create a new column split and set it to train, val or test according to the group_col
+        df_filtered['split'] = 'train'
+        df_filtered.loc[df_filtered[group_col].isin(val_groups), 'split'] = 'val'
+        df_filtered.loc[df_filtered[group_col].isin(test_groups), 'split'] = 'test'
+        print(f"Number of ids in the train set: {(df_filtered['split'] == 'train').sum()}")
+        print(f"Number of ids in the val set: {(df_filtered['split'] == 'val').sum()}")
+        print(f"Number of ids in the test set: {(df_filtered['split'] == 'test').sum()}")
 
-    #Forcing lines with the same id to be in the same split (if a subject is a case in one of the group that case should be in the same split of the group in which 
-    #it is the case, else i can choose wathever split)
-    # 1. Sort the DataFrame to bring the priority row to the top of each project group.
-    # - case_control descending (False) puts 1 before 0.
-    # - match_group ascending (True) puts the lowest number first.
-    df_sorted = df_filtered.sort_values(
-        by=['ident_projet', 'case_control', 'match_group'], 
-        ascending=[True, False, True]
-    )
-    # 2. Extract the winning split for each project (the first row of each group)
-    project_target_splits = df_sorted.groupby('ident_projet')['split'].first()
-    # 3. Map these correct splits back to your original DataFrame
-    df_filtered['split'] = df_filtered['ident_projet'].map(project_target_splits)
-    print("After forcing lines with the same id to be in the same split:")
-    print(f"Number of ids in the train set: {(df_filtered['split'] == 'train').sum()}")
-    print(f"Number of ids in the val set: {(df_filtered['split'] == 'val').sum()}")
-    print(f"Number of ids in the test set: {(df_filtered['split'] == 'test').sum()}")
+        #Forcing lines with the same id to be in the same split (if a subject is a case in one of the group that case should be in the same split of the group in which 
+        #it is the case, else i can choose wathever split)
+        # 1. Sort the DataFrame to bring the priority row to the top of each project group.
+        # - case_control descending (False) puts 1 before 0.
+        # - match_group ascending (True) puts the lowest number first.
+        df_sorted = df_filtered.sort_values(
+            by=['ident_projet', 'case_control', 'match_group'], 
+            ascending=[True, False, True]
+        )
+        # 2. Extract the winning split for each id (the first row of each group)
+        project_target_splits = df_sorted.groupby('ident_projet')['split'].first()
+        # 3. Map these correct splits back to your original DataFrame
+        df_filtered['split'] = df_filtered['ident_projet'].map(project_target_splits)
+        print("After forcing lines with the same id to be in the same split:")
+        print(f"Number of ids in the train set: {(df_filtered['split'] == 'train').sum()}")
+        print(f"Number of ids in the val set: {(df_filtered['split'] == 'val').sum()}")
+        print(f"Number of ids in the test set: {(df_filtered['split'] == 'test').sum()}")
 
     # 1. Get the maximum match_group 
     max_match_group = df_filtered['match_group'].max()
@@ -846,18 +915,38 @@ def prepare_table_for_training(filename,seed=42):
     # 3. Create the new id using fast, vectorized string operations
     df_filtered['unique_id'] = df_filtered['ident_projet'] + "_" + df_filtered['match_group'].astype(str).str.zfill(n_digits)
 
-    #chck if it was added with at_least or exact
-    avail_cols=[f'q_{q}_avail' for q in questionnairres]
-    final_matched_df['rempli_pattern'] = final_matched_df[avail_cols].astype(str).agg(''.join, axis=1)
+    print(df_filtered.columns)
 
-    '''
+    ######## ADD at_least LABEL + Prepare dateq data #########
+    #chck if it was added with at_least or exact by comparint the pattern of rempli_questionnaire
+    avail_cols=[f'q_{q}_avail' for q in questionnairres]
+    grid_avail_cols = [f'q_{q}_grid_file_avail' for q in questionnairres]
+    df_filtered['rempli_pattern'] = df_filtered[avail_cols].astype(str).agg(''.join, axis=1)
+    df_filtered['grid_pattern'] = df_filtered[grid_avail_cols].astype(str).agg(''.join, axis=1)
+
+    #Add case information to controls in the same group
     # 1. Extract the pattern of the case (case_control == 1) for each group
-    case_patterns = df[df['case_control'] == 1][['match_group', 'rempli_pattern']].rename(
-        columns={'rempli_pattern': 'case_pattern'}
+    date_columns = [f'dateq{i}' for i in range(1,14)]
+    #convert the date_suivi_diag1_quest column to datetime
+    df_filtered['date_suivi_diag1_quest'] = pd.to_datetime(df_filtered['date_suivi_diag1_quest'])
+    #convert the dateq columns to datetime
+    df_filtered[date_columns] = df_filtered[date_columns].apply(lambda col: pd.to_datetime(col))
+    #print(df_filtered[['unique_id','date_suivi_diag1_quest']+date_columns].head(10))
+    case_patterns = df_filtered[df_filtered['case_control'] == 1][['match_group', 'rempli_pattern',
+    'unique_id','grid_pattern','date_suivi_diag1_quest']+date_columns].rename(
+        columns={'rempli_pattern': 'case_pattern',
+                 'unique_id': 'case_unique_id',
+                 'grid_pattern': 'case_grid_pattern',
+                 'date_suivi_diag1_quest': 'case_date_suivi_diag1_quest'}
     )
+    #for each dateq column compute the difference in years between the dateq of the case and the date_suivi_diag1_quest
+    for col in date_columns:
+        case_patterns[col] = (case_patterns[col] - case_patterns['case_date_suivi_diag1_quest']).dt.days / 365.25
+    #rename the dateq columns to have the prefix case_
+    case_patterns = case_patterns.rename(columns={col: f"case_dt_{col}" for col in date_columns})
 
     # 2. Merge the case pattern back onto the main DataFrame
-    df_merged = df.merge(case_patterns, on='match_group', how='left')
+    df_merged = df_filtered.merge(case_patterns, on='match_group', how='left')
 
     # 3. Create a boolean mask to track mismatches
     mismatch_mask = pd.Series(False, index=df_merged.index)
@@ -877,28 +966,71 @@ def prepare_table_for_training(filename,seed=42):
         # Save the results into our master mask
         mismatch_mask.loc[q_mask] = mismatch
 
-    # 5. Filter the DataFrame to get your target rows
-    filtered_df = df_merged[mismatch_mask].drop(columns=['case_pattern'])
-    '''
+    # Create a column to indicate if there is a mismatch or not
+    df_merged['at_least_warning'] = mismatch_mask.astype(int)
+    df_filtered = df_merged.copy()
+    del df_merged
+    ####################################################
+    case_dt_columns = [f"case_dt_dateq{i}" for i in range(1,14)]
+    #print(df_filtered[['unique_id','date_suivi_diag1_quest']+case_dt_columns[:3]+date_columns[:3]].head(10))
 
+    #keep these columns
+    columns_to_keep = ['unique_id','split','case_control','last_avail_q','rempli_pattern','case_pattern',
+    'grid_pattern','case_grid_pattern', 'diag_park_final1_quest','at_least_warning']+case_dt_columns
+    columns_to_keep.extend([f'q_{q}_num_X' for q in range(1,14)]) 
+    columns_to_keep.extend([f'q_{q}_num_text' for q in range(1,14)])
+    columns_to_keep.extend([f'q_{q}_num_digit' for q in range(1,14)])
+    columns_to_keep.extend(['etudegp','profq2','lateralite','relative_age','birth_date','follow_up_time']) #matching variables
+    columns_to_keep.extend([]) #other variables of interest for the training ande evaluation of the model
+
+    df_filtered = df_filtered[columns_to_keep]
+    #save as parquet file
+    #df_filtered.to_parquet(os.path.join(OUTPUT_PATH, "final_table_for_training.parquet"), index=False)
+
+    # 2. Convert the pandas DataFrame to a PyArrow Table
+    table = pa.Table.from_pandas(df_filtered)
+
+    # 3. Define your custom metadata (Keys and values must be bytes)
+    # 1. Define your dynamic variables
+    current_user = "Andrea Morelli"
+    generated_at = datetime.now().isoformat()
+    file_comment = f"Generated from file {filename} with seed {seed} for reproducibility."
+    custom_metadata = {
+        b"comment": file_comment.encode("utf-8"),
+        b"created_by": current_user.encode("utf-8"),
+        b"generated_at": generated_at.encode("utf-8"),
+    }
+
+    # 4. Merge your custom metadata with any existing table metadata
+    existing_metadata = table.schema.metadata or {}
+    combined_metadata = {**existing_metadata, **custom_metadata}
+
+    # 5. Replace the table's schema with the new metadata-enriched schema
+    table = table.replace_schema_metadata(combined_metadata)
+
+    # 6. Write to Parquet
+    pq.write_table(table, os.path.join(output_path,'final_data_for_training.parquet'))
 
     return 
 
-PREPARE_FOR_TRAINING = False
-file_to_load = os.path.join(OUTPUT_PATH, "5_exact_age_mode_1_with_etudegp_profq2_filter_rempliseul\\final_matched_df.csv")
+PREPARE_FOR_TRAINING = True
+file_to_load = os.path.join(OUTPUT_PATH, "10_exact_w_fallback_age_mode_1_with_etudegp_profq2_split_filter_rempliseul\\final_matched_df.csv")
 CREATE_DF = False
 PREPARE_FOR_MATCHING = False
 GENERATE_HANDEDNESS_IDS = False
-MATCH = True
+MATCH = False
 TYPE_OF_MATCHING = "exact_w_fallback" #exact or exact_w_fallback or at_least
+SPLIT_BEFORE_MATCHING = True #if True, the split will be done before the matching, if False, the split will be done after the matching
 AGE_MODE = 1 #0 means exact matching on age, 1 means matching with age within 1 year, 2 means matching with age within 2 years, etc.
-N_MATCHES = 5 
-SHOW_MATCHED = True
+N_MATCHES = 10 
+SHOW_MATCHED = False
 OVERRIDE = False
 FILTER_REMPLI_SEUL = True #filter_rempliseul
 EXCLUDE_CASES_REMPLISEUL = False
-all_matching_cols = ['etudegp','profq2','lateralite']
-matching_cols=['etudegp','profq2','lateralite']#['etudegp','profq2','lateralite'] #the columns on which to perform the matching in addition to age and questionnaires. The values of these columns should be present before the matching phase (for example in the covariates file) and should not have missing values for the matched subjects. If empty, no matching will be done on these columns.
+all_matching_cols = ['etudegp','profq2','lateralite','split']
+matching_cols=['etudegp','profq2']#['etudegp','profq2','lateralite'] #the columns on which to perform the matching in addition to age and questionnaires. The values of these columns should be present before the matching phase (for example in the covariates file) and should not have missing values for the matched subjects. If empty, no matching will be done on these columns.
+if SPLIT_BEFORE_MATCHING: 
+    matching_cols+= ['split']
 matching_cols_string = "_".join(matching_cols) if len(matching_cols) > 0 else ""
 matching_name = f"{N_MATCHES}_{TYPE_OF_MATCHING}_age_mode_{AGE_MODE}"+(f"_with_{matching_cols_string}" if len(matching_cols) > 0 else "")
 if FILTER_REMPLI_SEUL:
@@ -922,19 +1054,22 @@ if __name__ == "__main__":
         
         if PREPARE_FOR_MATCHING:
             final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_with_all_info.csv"), encoding='cp1252')
-            final_table = prepare_for_matching(final_table) #automatically save the results to OUTPUT_PATH
+            final_table = prepare_for_matching(final_table, split_before=SPLIT_BEFORE_MATCHING, n_test=150,f_val=0.1) #automatically save the results to OUTPUT_PATH
         
         if GENERATE_HANDEDNESS_IDS:
             final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_with_all_info.csv"), encoding='cp1252')
             #select_ids_for_handedness_model(final_table)
             df_splitted = select_ids_for_handedness_model(final_table,n_controls=5,seed=42)
-            df_splitted.to_csv(os.path.join(OUTPUT_PATH, "handedness_model_ids_all_qs_2.csv"), index=False, encoding='cp1252')
+            df_splitted.to_csv(os.path.join(OUTPUT_PATH, "handedness_model_ids_all_qs_w_sentences.csv"), index=False, encoding='cp1252')
         
         if MATCH:
             #set seed for reproducibility
             seed = 42
             np.random.seed(seed)
-            final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching.csv"), encoding='cp1252')
+            if SPLIT_BEFORE_MATCHING:
+                final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching_splitted.csv"), encoding='cp1252')
+            else:
+                final_table = pd.read_csv(os.path.join(OUTPUT_PATH, "final_table_for_matching.csv"), encoding='cp1252')
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 final_matched_df, statistics_on_matches, failed_cases = matching(final_table,n_matches=N_MATCHES,time_of_entry_col="dateq1",time_of_exit_col="date_suivi_diag1_quest",
@@ -1116,7 +1251,7 @@ if __name__ == "__main__":
             final_matched_df.to_excel(os.path.join(load_path,'explore_matched_data.xlsx'), index=False, sheet_name='Results')
 
         if PREPARE_FOR_TRAINING:
-             prepare_table_for_training(file_to_load)
+             prepare_table_for_training(file_to_load,OUTPUT_PATH,seed=42, split_before=SPLIT_BEFORE_MATCHING)
         #print(1)
         #check_validity_final_table()
         #final_table = pd.read_csv(E3N_COVARIATES_PATH,encoding='cp1252')
